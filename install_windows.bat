@@ -57,8 +57,8 @@ pause
 exit /b 1
 
 :check_version
-for /f "tokens=*" %%v in ('!PY_CMD! -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"') do set "PY_VER=%%v"
-for /f "tokens=*" %%c in ('!PY_CMD! -c "import sys; print(1 if sys.version_info >= (3, 10) else 0)"') do set "PY_COMPAT=%%c"
+for /f "tokens=*" %%v in ('!PY_CMD! -c "import sys; print(str(sys.version_info[0]) + \".\" + str(sys.version_info[1]))"') do set "PY_VER=%%v"
+for /f "tokens=*" %%c in ('!PY_CMD! -c "import sys; print(int(sys.version_info >= (3, 10)))"') do set "PY_COMPAT=%%c"
 
 if not "!PY_COMPAT!"=="1" (
     echo [ERREUR] La version de Python détectée (!PY_VER!) est inférieure à 3.10.
