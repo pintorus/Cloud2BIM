@@ -11,11 +11,11 @@ VENV="$ROOT/.venv"
 STAMP="$VENV/.deps.stamp"
 PYTHON="${PYTHON:-python3}"
 
-# Windows (Git Bash / MSYS / Cygwin) -> full Windows reqs; else Linux-friendly set
-case "${OS:-}$(uname -s 2>/dev/null || true)" in
-    *Windows*|*MINGW*|*MSYS*|*CYGWIN*) REQS=(requirements.txt requirements-web.txt) ;;
-    *)                                REQS=(requirements-docker.txt) ;;
-esac
+if [ -f "requirements.txt" ]; then
+    REQS=(requirements.txt)
+else
+    REQS=(requirements-docker.txt)
+fi
 
 if [ ! -d "$VENV" ]; then
     echo "[run] Creating virtualenv..."
