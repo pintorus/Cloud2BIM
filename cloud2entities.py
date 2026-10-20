@@ -18,6 +18,16 @@ def _crash_handler(exc_type, exc_val, exc_tb):
 
 sys.excepthook = _crash_handler
 
+
+def progress(stage, pct):
+    """Emit a machine-readable progress marker consumed by the web UI.
+
+    Format:  @@PROGRESS@@ <stage> <pct>
+    The line is intercepted by web/job_manager.py and not shown in the log.
+    """
+    print("@@PROGRESS@@ %s %d" % (stage, int(pct)), flush=True)
+
+
 # === Load Configuration ===
 config = load_config_and_variables()
 
@@ -27,6 +37,8 @@ if e57_input:
     e57_file_names = config["e57_file_names"]
 xyz_filenames = config["xyz_filenames"]
 exterior_scan = config["exterior_scan"]
+scan_type_interior_threshold = config["scan_type_interior_threshold"]
+scan_type_exterior_threshold = config["scan_type_exterior_threshold"]
 dilute_pointcloud = config["dilute_pointcloud"]
 dilution_factor = config["dilution_factor"]
 pc_resolution = config["pc_resolution"]
@@ -39,6 +51,14 @@ min_wall_length = config["min_wall_length"]
 min_wall_thickness = config["min_wall_thickness"]
 max_wall_thickness = config["max_wall_thickness"]
 exterior_walls_thickness = config["exterior_walls_thickness"]
+wall_band_low = config["wall_band_low"]
+wall_band_high = config["wall_band_high"]
+mask_erode = config["mask_erode"]
+merge_fragments = config["merge_fragments"]
+merge_angle_tolerance_deg = config["merge_angle_tolerance_deg"]
+opening_histogram_threshold = config["opening_histogram_threshold"]
+merge_max_axis_gap = config["merge_max_axis_gap"]
+merge_min_offset_tolerance = config["merge_min_offset_tolerance"]
 
 ifc_output_file = config["ifc_output_file"]
 ifc_project_name = config["ifc_project_name"]
@@ -74,14 +94,22 @@ os.makedirs("output_xyz", exist_ok=True)
 
 # SECTION: Import Point Clouds
 
+progress('import', 2)
+
 # read e57 files and create xyz
 if e57_input:
     for (idx, e57_file_name) in enumerate(e57_file_names):
         last_time = log('Reading %s.' % e57_file_name, last_time, log_filename)
         imported_e57_data = read_e57(e57_file_name)
-        e57_data_to_xyz(imported_e57_data, xyz_filenames[idx], chunk_size=1e10)
+        _import_span = 16.0 / len(e57_file_names)
+        e57_data_to_xyz(
+            imported_e57_data, xyz_filenames[idx], chunk_size=5e6,
+            progress_cb=lambda frac, base=2 + idx * _import_span: progress('import', base + _import_span * frac),
+        )
         last_time = log('File %s converted to ASCII format, saved as %s.' % (e57_file_name, xyz_filenames[idx]),
                         last_time, log_filename)
+
+progress('import', 20)
 
 # read xyz file
 points_xyz, points_rgb = np.empty((0, 3)), np.empty((0, 3))
@@ -93,6 +121,34 @@ for xyz_filename in xyz_filenames:
     # points_rgb = np.vstack((points_rgb, np.array(points_rgb_temp)))
 points_xyz = np.round(points_xyz, 3)  # round the xyz coordinates to 3 decimals
 last_time = log('All point cloud data imported.', last_time, log_filename)
+
+# SECTION: Clean point cloud (decimation + noise removal)
+clean_enabled = config.get("clean_enabled", False)
+clean_params = {
+    "voxel_size": config.get("voxel_size", 0.0),
+    "sor_k": config.get("sor_k", 0),
+    "sor_std_ratio": config.get("sor_std_ratio", 2.0),
+    "ror_radius": config.get("ror_radius", 0.0),
+    "ror_min_neighbors": config.get("ror_min_neighbors", 4),
+}
+if clean_enabled:
+    from web.cleaning import clean_indices, is_clean_active, normalize_clean_params
+    clean_params = normalize_clean_params(clean_params)
+    if is_clean_active(clean_params):
+        n_before = len(points_xyz)
+        keep = clean_indices(points_xyz, clean_params)
+        points_xyz = points_xyz[keep]
+        removed = n_before - len(points_xyz)
+        print("[INFO] Point cloud cleaning: %d -> %d points (%d removed, %.1f%%) "
+              "[voxel=%.3f sor_k=%d/%.2f ror_r=%.3f/%d]"
+              % (n_before, len(points_xyz), removed,
+                 100.0 * removed / max(1, n_before),
+                 clean_params["voxel_size"], clean_params["sor_k"],
+                 clean_params["sor_std_ratio"], clean_params["ror_radius"],
+                 clean_params["ror_min_neighbors"]))
+        last_time = log('Point cloud cleaning applied.', last_time, log_filename)
+
+progress('import', 22)
 
 if len(points_xyz) == 0:
     sys.exit("[ERROR] Point cloud is empty after import. Check the input file.")
@@ -108,13 +164,26 @@ print(f"[INFO] Coordinate offset applied: X={_xyz_offset[0]:.3f} Y={_xyz_offset[
 print("-" * 50)
 print("Slab segmentation")
 print("-" * 50)
+progress('slabs', 24)
 # scan the model along the z-coordinate and search for planes parallel to xy-plane
 slabs, horizontal_surface_planes = identify_slabs(points_xyz, points_rgb, bfs_thickness,
                                                   tfs_thickness, z_step=0.15,
                                                   pc_resolution=pc_resolution,
                                                   plot_segmented_plane=False)  # plot with open 3D
+progress('slabs', 38)
 
-# SECTION: Segment Walls and Classify Openings
+# SECTION: Resolve the scan type (auto) and Segment Walls
+if isinstance(exterior_scan, str) and exterior_scan.strip().lower() == "auto":
+    scan_type = classify_scan(slabs, scan_type_interior_threshold, scan_type_exterior_threshold)
+    exterior_scan = (scan_type == "exterior")
+    print("[INFO] Scan classified as '%s' -> exterior_scan=%s (rectangularity thresholds %.2f/%.2f)"
+          % (scan_type, exterior_scan, scan_type_interior_threshold, scan_type_exterior_threshold))
+elif isinstance(exterior_scan, str):
+    exterior_scan = exterior_scan.strip().lower() in ("1", "true", "yes", "exterior")
+else:
+    scan_type = "interior" if not exterior_scan else "exterior"
+    print("[INFO] Scan type forced to '%s' by configuration." % scan_type)
+
 print("-" * 50)
 print("Wall segmentation")
 print("-" * 50)
@@ -129,7 +198,10 @@ point_cloud_storeys = split_pointcloud_to_storeys(points_xyz, slabs)
 # display_cross_section_plot(point_cloud_storeys, slabs)
 walls, all_openings, zones = [], [], []
 wall_id = 0
+_n_storeys = max(1, len(point_cloud_storeys))
+progress('walls', 38)
 for i, storey_pointcloud in enumerate(point_cloud_storeys):
+    progress('walls', 38 + 40 * i / len(point_cloud_storeys))
 
     if exterior_scan:
         z_placement = slabs[i]['slab_bottom_z_coord'] + slabs[i]['thickness']
@@ -150,17 +222,33 @@ for i, storey_pointcloud in enumerate(point_cloud_storeys):
 
     top_z_placement = slabs[i + 1]['slab_bottom_z_coord']
 
+    # Slab-free wall zone used to sample the 2D mask: from the top face of the
+    # lower slab to the underside of the upper slab. Keeps the sampling band
+    # clear of the floor/ceiling slab layers.
+    _wall_band_zone = (slabs[i]['slab_bottom_z_coord'] + slabs[i]['thickness'],
+                       slabs[i + 1]['slab_bottom_z_coord'])
+    if _wall_band_zone[1] <= _wall_band_zone[0]:
+        _wall_band_zone = (z_placement, top_z_placement)
+
     try:
         (start_points, end_points, wall_thicknesses, wall_materials,
          translated_filtered_rotated_wall_groups, wall_labels) = (
             identify_walls(storey_pointcloud, pc_resolution, min_wall_length, min_wall_thickness, max_wall_thickness,
                            z_placement, top_z_placement, grid_coefficient, slabs[i + 1]['polygon'], exterior_scan,
-                           exterior_walls_thickness=0.45))
+                           exterior_walls_thickness=exterior_walls_thickness,
+                           wall_band_low=wall_band_low, wall_band_high=wall_band_high,
+                           wall_band_z=_wall_band_zone, mask_erode=mask_erode,
+                           merge_fragments=merge_fragments,
+                           merge_angle_tolerance_deg=merge_angle_tolerance_deg,
+                           merge_max_axis_gap=merge_max_axis_gap,
+                           merge_min_offset_tolerance=merge_min_offset_tolerance))
     except Exception as _wall_err:
         print(f"[WARNING] Wall detection failed for storey {i + 1}, skipping: {_wall_err}")
         _traceback.print_exc(file=sys.stdout)
         zones.append({})
         continue
+
+    progress('walls', 38 + 40 * (i + 0.5) / _n_storeys)
 
     print("-" * 50)
     print("Rectangular openings detection")
@@ -178,6 +266,7 @@ for i, storey_pointcloud in enumerate(point_cloud_storeys):
         (opening_widths, opening_heights,
          opening_types) = identify_openings(j + 1, translated_filtered_rotated_wall_groups[j],
                                             wall_labels[j], pc_resolution, grid_coefficient,
+                                            histogram_threshold=opening_histogram_threshold,
                                             min_opening_width=0.4, min_opening_height=0.6,
                                             max_opening_aspect_ratio=4, door_z_max=0.1,
                                             door_min_height=1.6, opening_min_z_top=1.6,
@@ -209,6 +298,8 @@ for i, storey_pointcloud in enumerate(point_cloud_storeys):
                 f"Opening ({opening_type:s}): X-Range: {x_start:.2f} to {x_end:.2f}, Z-Range: {z_min:.2f} to {z_max:.2f}")
         print("-" * 50)
 
+    progress('walls', 38 + 40 * (i + 1) / _n_storeys)
+
     # SECTION: Split the Storeys to Zones (Spaces in the IFC)
     print('Segmenting the storey to zones (spaces)...')
     print("-" * 50)
@@ -218,11 +309,13 @@ for i, storey_pointcloud in enumerate(point_cloud_storeys):
         print(f"[WARNING] Zone detection failed for storey {i + 1}, skipping zones: {_zone_err}")
         zones_in_storey = {}
     zones.append(zones_in_storey)
+    progress('zones', 78 + 6 * (i + 1) / _n_storeys)
 
 # SECTION: Generate IFC
 print("-" * 50)
 print("Generating IFC model")
 print("-" * 50)
+progress('ifc', 84)
 ifc_model = IFCmodel(ifc_project_name, ifc_output_file)
 ifc_model.define_author_information(ifc_author_name + ' ' + ifc_author_surname, ifc_author_organization)
 ifc_model.define_project_data(ifc_building_name, ifc_building_type, ifc_building_phase,
@@ -351,7 +444,11 @@ for i, stair_parts in enumerate(stairs):
     stair = ifc_model.create_stair(stair_name, storeys_ifc[stair_parts[0]["storey"] - 1], stair_parts, stair_material)
 '''
 # Wall definition for IFC
-for wall in walls:
+progress('ifc', 86)
+_n_walls = max(len(walls), 1)
+for _w_idx, wall in enumerate(walls):
+    if _w_idx % 5 == 0 or _w_idx == _n_walls - 1:
+        progress('ifc', 86 + 10 * (_w_idx + 1) / _n_walls)
     start_point = tuple(float(num) for num in wall['start_point'])
     end_point = tuple(float(num) for num in wall['end_point'])
     if start_point == end_point:
@@ -431,7 +528,7 @@ for wall in walls:
         offset_from_start = x_range_start
 
         opening_closed_profile = ifc_model.opening_closed_profile_def(float(opening_width), wall_thickness)
-        opening_placement = ifc_model.opening_placement(start_point, wall_placement)
+        opening_placement = ifc_model.opening_placement(start_point, wall_placement, base_z=-wall_z_placement)
         opening_extrusion = ifc_model.opening_extrusion(opening_closed_profile, float(opening_height), start_point,
                                                         end_point, float(window_sill_height), float(offset_from_start))
         opening_representation = ifc_model.opening_representation(opening_extrusion)
@@ -462,6 +559,7 @@ for wall in walls:
             ifc_model.assign_material(door, door_material)
 
 # Write the IFC model to a file
+progress('preview', 96)
 ifc_model.write()
 last_time = log('\nIFC model saved to %s.' % ifc_output_file, last_time, log_filename)
 
@@ -522,3 +620,5 @@ try:
     print('Floor plan preview saved to %s.' % preview_path)
 except Exception as _preview_err:
     print('Warning: could not generate preview: %s' % _preview_err)
+
+progress('done', 100)

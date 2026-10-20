@@ -9,7 +9,7 @@ import os
 import threading
 import uuid
 from pathlib import Path
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, List, Optional, Union
 
 import aiofiles
 import yaml
@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from web.job_manager import JobManager
+from web import pointcloud
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -54,6 +55,8 @@ else:
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
+POINTCLOUD_CACHE_DIR = JOBS_DIR / "_pointcloud_cache"
+POINTCLOUD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
@@ -168,13 +171,25 @@ class CreateJobRequest(BaseModel):
 
     # Input format
     e57_input: bool = False
-    exterior_scan: bool = False
+    # True/False force the scan type; "auto" (default) classifies it from the
+    # slab-polygon rectangularity (see aux_functions.classify_scan).
+    exterior_scan: Union[bool, str] = "auto"
+    scan_type_interior_threshold: float = 0.75
+    scan_type_exterior_threshold: float = 0.40
 
     # Point cloud options
     dilute: bool = True
     dilution_factor: int = 10
     pc_resolution: float = 0.002
     grid_coefficient: int = 5
+
+    # Point cloud cleaning (decimation + noise removal)
+    clean_enabled: bool = False
+    voxel_size: float = 0.0
+    sor_k: int = 0
+    sor_std_ratio: float = 2.0
+    ror_radius: float = 0.0
+    ror_min_neighbors: int = 4
 
     # Slab thicknesses
     bfs_thickness: float = 0.3
@@ -185,6 +200,26 @@ class CreateJobRequest(BaseModel):
     min_wall_thickness: float = 0.05
     max_wall_thickness: float = 0.75
     exterior_walls_thickness: float = 0.3
+
+    # Wall sampling band, as a fraction of the storey height (z_placement ->
+    # top_z_placement). Keeps the band off the floor/ceiling slab layers.
+    wall_band_low: float = 0.30
+    wall_band_high: float = 0.70
+
+    # Mask erosion before contouring (>=1 enables it). Keeps the two faces of a
+    # dense wall separate so they can be grouped into a single wall.
+    mask_erode: int = 3
+
+    # Merge collinear/co-planar wall fragments (split by openings, or the two
+    # faces of one wall detected separately) into a single wall.
+    merge_fragments: bool = True
+    merge_angle_tolerance_deg: float = 10.0
+    merge_max_axis_gap: float = 1.0
+    merge_min_offset_tolerance: float = 0.3
+
+    # Opening detection: bin-density fraction of the x-histogram below which a
+    # slice of wall is considered an opening. Higher -> more openings detected.
+    opening_histogram_threshold: float = 0.85
 
     # IFC project metadata
     ifc_project_name: str = "Cloud2BIM Project"
@@ -339,16 +374,32 @@ async def create_job(request: CreateJobRequest):
         "xyz_files": [xyz_converted] if e57_input else [pipeline_input],
         "e57_files": [pipeline_input] if e57_input else [],
         "exterior_scan": request.exterior_scan,
+        "scan_type_interior_threshold": request.scan_type_interior_threshold,
+        "scan_type_exterior_threshold": request.scan_type_exterior_threshold,
         "dilute": request.dilute,
         "dilution_factor": request.dilution_factor,
         "pc_resolution": request.pc_resolution,
         "grid_coefficient": request.grid_coefficient,
+        "clean_enabled": request.clean_enabled,
+        "voxel_size": request.voxel_size,
+        "sor_k": request.sor_k,
+        "sor_std_ratio": request.sor_std_ratio,
+        "ror_radius": request.ror_radius,
+        "ror_min_neighbors": request.ror_min_neighbors,
         "bfs_thickness": request.bfs_thickness,
         "tfs_thickness": request.tfs_thickness,
         "min_wall_length": request.min_wall_length,
         "min_wall_thickness": request.min_wall_thickness,
         "max_wall_thickness": request.max_wall_thickness,
         "exterior_walls_thickness": request.exterior_walls_thickness,
+        "wall_band_low": request.wall_band_low,
+        "wall_band_high": request.wall_band_high,
+        "mask_erode": request.mask_erode,
+        "merge_fragments": request.merge_fragments,
+        "merge_angle_tolerance_deg": request.merge_angle_tolerance_deg,
+        "merge_max_axis_gap": request.merge_max_axis_gap,
+        "merge_min_offset_tolerance": request.merge_min_offset_tolerance,
+        "opening_histogram_threshold": request.opening_histogram_threshold,
         "output_ifc": output_ifc,
         "ifc_project_name": request.ifc_project_name,
         "ifc_project_long_name": request.ifc_project_long_name,
@@ -402,12 +453,18 @@ async def stream_logs(job_id: str):
 
     async def generate() -> AsyncGenerator[str, None]:
         last_idx = 0
+        last_progress = None
         while True:
             job = job_manager.get_job(job_id)
             new_lines = job["log_lines"][last_idx:]
             for line in new_lines:
                 yield f"data: {json.dumps({'line': line})}\n\n"
             last_idx += len(new_lines)
+
+            progress = job.get("progress")
+            if progress and progress != last_progress:
+                yield f"data: {json.dumps({'progress': progress})}\n\n"
+                last_progress = dict(progress)
 
             if job["status"] in ("completed", "failed"):
                 yield f"data: {json.dumps({'done': True, 'status': job['status']})}\n\n"
@@ -497,7 +554,157 @@ async def get_preview(job_id: str):
     return FileResponse(str(preview_path), media_type="image/png")
 
 
-@app.get("/api/jobs/{job_id}/download")
+# ── Point cloud viewer (E57 / LAS / LAZ / XYZ) ───────────────────────────────
+
+def _resolve_pointcloud_source(job_id: Optional[str], upload_id: Optional[str],
+                               network_path: Optional[str]) -> str:
+    if job_id:
+        job_dir = JOBS_DIR / job_id
+        converted = job_dir / "converted_input.xyz"
+        if converted.exists():
+            return str(converted)
+        info_path = job_dir / "job_info.json"
+        if info_path.exists():
+            raise HTTPException(404, "No point cloud stored for this job")
+        raise HTTPException(404, "Job not found")
+
+    if upload_id:
+        meta_path = UPLOAD_DIR / upload_id / "meta.json"
+        if not meta_path.exists():
+            raise HTTPException(404, "Upload not found")
+        meta = json.loads(meta_path.read_text())
+        file_path = UPLOAD_DIR / upload_id / meta["filename"]
+        if not file_path.exists():
+            raise HTTPException(404, "Uploaded file not found")
+        return str(file_path)
+
+    if network_path:
+        p = Path(network_path)
+        if NETWORK_DRIVES:
+            allowed = any(str(p).startswith(str(Path(d["path"]))) for d in NETWORK_DRIVES)
+            if not allowed:
+                raise HTTPException(403, "Path not in allowed network drives")
+        if not p.exists():
+            raise HTTPException(404, "File not found")
+        return str(p)
+
+    raise HTTPException(400, "job_id, upload_id or path is required")
+
+
+@app.get("/api/pointcloud")
+async def get_pointcloud(
+    job_id: Optional[str] = None,
+    upload_id: Optional[str] = None,
+    path: Optional[str] = None,
+    max_points: int = 3_000_000,
+):
+    """Serve a downsampled point cloud as a compact binary blob (magic C2BP)."""
+    source = _resolve_pointcloud_source(job_id, upload_id, path)
+    max_points = max(10_000, min(max_points, 20_000_000))
+
+    if job_id:
+        out_path = JOBS_DIR / job_id / "pointcloud.bin"
+    else:
+        from web.pointcloud import source_cache_key
+        key = source_cache_key(source)
+        out_path = JOBS_DIR / "_pointcloud_cache" / f"{key}_{max_points}.bin"
+
+    if not out_path.exists():
+        try:
+            await asyncio.to_thread(
+                _build_pointcloud_cached, source, str(out_path), max_points
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(500, f"Could not build point cloud: {exc}")
+
+    return FileResponse(
+        str(out_path),
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+def _build_pointcloud_cached(source: str, out_path: str, max_points: int,
+                             clean_params: Optional[dict] = None):
+    from web.pointcloud import build_pointcloud_binary
+    tmp = out_path + ".tmp"
+    build_pointcloud_binary(source, tmp, max_points, clean_params=clean_params)
+    os.replace(tmp, out_path)
+
+
+@app.get("/api/pointcloud/clean")
+async def get_pointcloud_clean(
+    job_id: Optional[str] = None,
+    upload_id: Optional[str] = None,
+    path: Optional[str] = None,
+    max_points: int = 3_000_000,
+    voxel_size: float = 0.0,
+    sor_k: int = 0,
+    sor_std_ratio: float = 2.0,
+    ror_radius: float = 0.0,
+    ror_min_neighbors: int = 4,
+):
+    """Serve the *cleaned* point cloud (decimation + SOR/ROR) as a C2BP blob."""
+    from web.cleaning import normalize_clean_params, clean_cache_suffix, is_clean_active
+    from web.pointcloud import source_cache_key
+
+    source = _resolve_pointcloud_source(job_id, upload_id, path)
+    max_points = max(10_000, min(max_points, 20_000_000))
+
+    clean_params = normalize_clean_params({
+        "voxel_size": voxel_size, "sor_k": sor_k, "sor_std_ratio": sor_std_ratio,
+        "ror_radius": ror_radius, "ror_min_neighbors": ror_min_neighbors,
+    })
+    suffix = clean_cache_suffix(clean_params) if is_clean_active(clean_params) else "raw"
+    key = source_cache_key(source)
+    out_path = JOBS_DIR / "_pointcloud_cache" / f"{key}_clean_{suffix}_{max_points}.bin"
+
+    if not out_path.exists():
+        try:
+            await asyncio.to_thread(
+                _build_pointcloud_cached, source, str(out_path), max_points, clean_params
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(500, f"Could not build point cloud: {exc}")
+
+    return FileResponse(
+        str(out_path),
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/api/pointcloud/clean/suggest")
+async def suggest_pointcloud_clean(
+    job_id: Optional[str] = None,
+    upload_id: Optional[str] = None,
+    path: Optional[str] = None,
+):
+    """Analyse the source cloud and propose cleaning parameters (auto-tune)."""
+    from web.cleaning import suggest_clean_params
+    from web.pointcloud import _load_source
+
+    source = _resolve_pointcloud_source(job_id, upload_id, path)
+
+    def _work():
+        # Analyse at (near) full resolution: E57/LAS readers load the whole
+        # cloud anyway, and a strided sample would inflate the nearest-neighbour
+        # spacing (and therefore the suggested voxel size).
+        positions, _ = _load_source(source, 12_000_000)
+        return suggest_clean_params(positions)
+
+    try:
+        params, diagnostics = await asyncio.to_thread(_work)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Could not analyse point cloud: {exc}")
+
+    return {"params": params, "diagnostics": diagnostics}
 async def download_ifc(job_id: str):
     job = job_manager.get_job(job_id)
     if not job:

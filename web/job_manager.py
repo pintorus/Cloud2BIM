@@ -1,10 +1,15 @@
 import os
+import re
 import subprocess
 import sys
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+# Progress markers emitted by the pipeline on stdout, e.g.:
+#   @@PROGRESS@@ walls 42
+_PROGRESS_RE = re.compile(r"^@@PROGRESS@@\s+(\w+)\s+(\d+)\s*$")
 
 # Jobs older than this are purged from memory (output files kept on disk)
 _JOB_MAX_AGE_HOURS = 48
@@ -24,6 +29,7 @@ class JobManager:
             job = {
                 "job_id": job_id,
                 "status": "pending",
+                "progress": {"stage": "pending", "pct": 0},
                 "input_path": input_path,
                 "log_lines": [],
                 "created_at": datetime.now().isoformat(),
@@ -51,6 +57,7 @@ class JobManager:
         process = None
         try:
             if preprocess_fn is not None:
+                self._set_progress(job_id, "import", 1)
                 self._append_log(job_id, "[INFO] Förbereder fil...")
                 preprocess_fn(lambda msg: self._append_log(job_id, msg))
                 self._append_log(job_id, "[INFO] Filkonvertering klar.")
@@ -78,7 +85,12 @@ class JobManager:
             timer.start()
             try:
                 for line in process.stdout:
-                    self._append_log(job_id, line.rstrip())
+                    line = line.rstrip()
+                    m = _PROGRESS_RE.match(line)
+                    if m:
+                        self._set_progress(job_id, m.group(1), int(m.group(2)))
+                    else:
+                        self._append_log(job_id, line)
                 process.wait()
             finally:
                 timer.cancel()
@@ -111,6 +123,11 @@ class JobManager:
         with self._lock:
             if job_id in self._jobs:
                 self._jobs[job_id]["log_lines"].append(line)
+
+    def _set_progress(self, job_id: str, stage: str, pct: int):
+        with self._lock:
+            if job_id in self._jobs:
+                self._jobs[job_id]["progress"] = {"stage": stage, "pct": max(0, min(100, pct))}
 
     def _evict_old_jobs(self):
         """Remove completed/failed jobs older than _JOB_MAX_AGE_HOURS from memory."""

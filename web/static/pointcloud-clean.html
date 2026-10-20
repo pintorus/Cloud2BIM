@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cloud2BIM — Point cloud cleaning</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0f1117; color: #e2e4f0; font-family: system-ui, sans-serif;
+           height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+    header { padding: 8px 14px; background: #1a1d27; border-bottom: 1px solid #2e3350;
+             display: flex; align-items: center; gap: 12px; font-size: 13px; flex-shrink: 0; flex-wrap: wrap; }
+    header strong { color: #4f8ef7; }
+    #modes { margin-left: auto; display: flex; gap: 6px; }
+    #modes button { background: #232738; color: #9aa0c0; border: 1px solid #2e3350;
+                    border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer;
+                    font-family: inherit; }
+    #modes button.active { background: #4f8ef7; color: #fff; border-color: #4f8ef7; }
+    #wrap { flex: 1; position: relative; }
+    canvas { width: 100% !important; height: 100% !important; display: block; }
+    #overlay { position: absolute; inset: 0; display: flex; flex-direction: column;
+               align-items: center; justify-content: center; gap: 12px;
+               background: #0f1117; color: #7b82a0; font-size: 13px; }
+    .spinner { width: 32px; height: 32px; border: 3px solid #2e3350;
+               border-top-color: #4f8ef7; border-radius: 50%;
+               animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #stats { position: absolute; bottom: 12px; left: 12px; font-size: 12px;
+             color: #b7bdda; background: rgba(26,29,39,.88); border: 1px solid #2e3350;
+             border-radius: 8px; padding: 8px 12px; backdrop-filter: blur(4px); line-height: 1.6; }
+    #stats b { color: #4f8ef7; }
+    .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <strong>Cloud2BIM</strong>
+  <span id="hdr" data-i18n="clean.header">Point cloud cleaning — before / after</span>
+  <div id="modes">
+    <button type="button" id="m-before" class="active" data-i18n="clean.mode.before">Before</button>
+    <button type="button" id="m-after" data-i18n="clean.mode.after">After</button>
+    <button type="button" id="m-overlay" data-i18n="clean.mode.overlay">Overlay</button>
+  </div>
+</header>
+
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="overlay"><div class="spinner"></div><div id="status">Loading…</div></div>
+  <div id="stats" style="display:none"></div>
+</div>
+
+<script src="/static/js/i18n.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const params = new URLSearchParams(location.search);
+const jobId = params.get('job');
+const uploadId = params.get('upload');
+const netPath = params.get('path');
+
+const t = (k) => (window.t ? window.t(k) : k);
+const overlay = document.getElementById('overlay');
+const statusEl = document.getElementById('status');
+const wrap = document.getElementById('wrap');
+const statsEl = document.getElementById('stats');
+
+function showError(msg) {
+  overlay.innerHTML = `<div style="color:#e84855;text-align:center;padding:24px;max-width:400px">
+    <div style="font-size:22px;margin-bottom:8px">⚠️</div><div>${msg}</div></div>`;
+}
+
+const sourceQuery = jobId
+  ? `job_id=${encodeURIComponent(jobId)}`
+  : uploadId
+    ? `upload_id=${encodeURIComponent(uploadId)}`
+    : netPath
+      ? `path=${encodeURIComponent(netPath)}`
+      : null;
+
+if (!sourceQuery) { showError(t('viewer.no.job')); throw new Error('no source'); }
+
+const cleanQuery = ['voxel_size', 'sor_k', 'sor_std_ratio', 'ror_radius', 'ror_min_neighbors']
+  .filter(k => params.has(k))
+  .map(k => `${k}=${encodeURIComponent(params.get(k))}`)
+  .join('&');
+
+// ── Three.js setup ─────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0f1117);
+scene.fog = new THREE.FogExp2(0x0f1117, 0.008);
+
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 5000);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+
+function resize() {
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+resize();
+new ResizeObserver(resize).observe(wrap);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const sun = new THREE.DirectionalLight(0xfff8ee, 1.1);
+sun.position.set(-15, 30, 20);
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0x8899dd, 0.35);
+fill.position.set(10, -5, -15);
+scene.add(fill);
+
+const grid = new THREE.GridHelper(200, 40, 0x2e3350, 0x1f2236);
+scene.add(grid);
+
+const root = new THREE.Group();
+root.rotation.x = -Math.PI / 2;
+scene.add(root);
+
+function heightColor(v) {
+  v = Math.max(0, Math.min(1, v));
+  const stops = [
+    [0.12, 0.28, 0.60], [0.18, 0.62, 0.78], [0.30, 0.75, 0.35],
+    [0.92, 0.80, 0.25], [0.88, 0.30, 0.22],
+  ];
+  const p = v * (stops.length - 1);
+  const i = Math.floor(p), f = p - i;
+  const a = stops[i], b = stops[Math.min(i + 1, stops.length - 1)];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+
+async function loadCloud(url, { uniform = null } = {}) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  const buf = await res.arrayBuffer();
+  const dv = new DataView(buf);
+  const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+  if (magic !== 'C2BP') throw new Error('Unexpected point cloud format');
+
+  const n = dv.getUint32(8, true);
+  const hasColor = dv.getUint32(12, true) === 1;
+  let off = 16;
+  const bmin = [dv.getFloat32(off, true), dv.getFloat32(off + 4, true), dv.getFloat32(off + 8, true)];
+  off += 12;
+  const bmax = [dv.getFloat32(off, true), dv.getFloat32(off + 4, true), dv.getFloat32(off + 8, true)];
+  off += 12;
+
+  const pos = new Float32Array(buf, off, n * 3);
+  off += n * 3 * 4;
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+
+  const colors = new Float32Array(n * 3);
+  let src = null;
+  if (hasColor) {
+    src = new Uint8Array(buf, off, n * 3);
+    let sum = 0;
+    for (let i = 0; i < n * 3; i++) sum += src[i];
+    if (sum / (n * 3) < 1.5) src = null;
+  }
+  if (uniform) {
+    for (let i = 0; i < n; i++) {
+      colors[i * 3] = uniform[0]; colors[i * 3 + 1] = uniform[1]; colors[i * 3 + 2] = uniform[2];
+    }
+  } else if (src) {
+    for (let i = 0; i < n * 3; i++) colors[i] = src[i] / 255;
+  } else {
+    const dz = (bmax[2] - bmin[2]) || 1;
+    for (let i = 0; i < n; i++) {
+      const c = heightColor(pos[i * 3 + 2] / dz);
+      colors[i * 3] = c[0]; colors[i * 3 + 1] = c[1]; colors[i * 3 + 2] = c[2];
+    }
+  }
+  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  return { geom, n, bmin, bmax, pos };
+}
+
+let beforeCloud = null, afterCloud = null;
+
+function makePoints(cloud, { size, opacity = 1, uniform = null }) {
+  const extent = Math.max(cloud.bmax[0] - cloud.bmin[0], cloud.bmax[1] - cloud.bmin[1],
+                          cloud.bmax[2] - cloud.bmin[2]) || 1;
+  const mat = new THREE.PointsMaterial({
+    size: extent / size, vertexColors: true, sizeAttenuation: true,
+    transparent: opacity < 1, opacity, depthWrite: opacity >= 1,
+  });
+  const pts = new THREE.Points(cloud.geom, mat);
+  pts.position.set(cloud.bmin[0], cloud.bmin[1], cloud.bmin[2]);
+  return pts;
+}
+
+let beforeObj = null, afterObj = null;
+
+function setMode(mode) {
+  document.getElementById('m-before').classList.toggle('active', mode === 'before');
+  document.getElementById('m-after').classList.toggle('active', mode === 'after');
+  document.getElementById('m-overlay').classList.toggle('active', mode === 'overlay');
+
+  if (beforeObj) beforeObj.visible = (mode === 'before' || mode === 'overlay');
+  if (afterObj) afterObj.visible = (mode === 'after' || mode === 'overlay');
+
+  if (beforeObj) {
+    beforeObj.material.transparent = (mode === 'overlay');
+    beforeObj.material.opacity = (mode === 'overlay') ? 0.35 : 1.0;
+    beforeObj.material.depthWrite = (mode !== 'overlay');
+    beforeObj.material.needsUpdate = true;
+  }
+  updateStats(mode);
+}
+
+function updateStats(mode) {
+  if (!beforeCloud || !afterCloud) return;
+  const removed = beforeCloud.n - afterCloud.n;
+  const pct = beforeCloud.n ? (100 * removed / beforeCloud.n) : 0;
+  const line = (label, n, color) =>
+    `<div><span class="swatch" style="background:${color}"></span>${label}: <b>${n.toLocaleString()}</b></div>`;
+  if (mode === 'overlay') {
+    statsEl.innerHTML =
+      line(t('clean.before'), beforeCloud.n, '#8c96b0') +
+      line(t('clean.after'), afterCloud.n, '#4f8ef7') +
+      `<div>${t('clean.removed')}: <b>${removed.toLocaleString()}</b> (${pct.toFixed(1)}%)</div>`;
+  } else {
+    statsEl.innerHTML = line(mode === 'before' ? t('clean.before') : t('clean.after'),
+                             mode === 'before' ? beforeCloud.n : afterCloud.n, '#4f8ef7') +
+      `<div>${t('clean.removed')}: <b>${removed.toLocaleString()}</b> (${pct.toFixed(1)}%)</div>`;
+  }
+}
+
+function fitCamera(cloud) {
+  const center = new THREE.Vector3(
+    (cloud.bmin[0] + cloud.bmax[0]) / 2,
+    (cloud.bmin[1] + cloud.bmax[1]) / 2,
+    (cloud.bmin[2] + cloud.bmax[2]) / 2,
+  );
+  const size = new THREE.Vector3(
+    cloud.bmax[0] - cloud.bmin[0], cloud.bmax[1] - cloud.bmin[1], cloud.bmax[2] - cloud.bmin[2]);
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const dist = maxDim * 1.8;
+  camera.position.set(center.x + dist * 0.6, center.z + dist, center.y + dist * 0.5);
+  camera.near = dist * 0.001;
+  camera.far = dist * 10;
+  camera.updateProjectionMatrix();
+  controls.target.set(center.x, center.z, center.y);
+  controls.update();
+  grid.position.set(center.x, cloud.bmin[2], center.y);
+}
+
+document.getElementById('m-before').addEventListener('click', () => setMode('before'));
+document.getElementById('m-after').addEventListener('click', () => setMode('after'));
+document.getElementById('m-overlay').addEventListener('click', () => setMode('overlay'));
+
+(async function main() {
+  try {
+    statusEl.textContent = t('viewer.pc.loading');
+    beforeCloud = await loadCloud(`/api/pointcloud?${sourceQuery}&max_points=3000000`);
+
+    statusEl.textContent = t('clean.preview.loading');
+    const cleanUrl = `/api/pointcloud/clean?${sourceQuery}&max_points=3000000` +
+      (cleanQuery ? `&${cleanQuery}` : '');
+    afterCloud = await loadCloud(cleanUrl);
+
+    beforeObj = makePoints(beforeCloud, { size: 400 });
+    afterObj = makePoints(afterCloud, { size: 400 });
+    root.add(beforeObj);
+    root.add(afterObj);
+
+    fitCamera(afterCloud);
+    statsEl.style.display = 'block';
+    setMode(params.get('mode') || 'overlay');
+    overlay.style.display = 'none';
+
+    (function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    })();
+  } catch (err) {
+    showError(err.message || String(err));
+  }
+})();
+</script>
+</body>
+</html>

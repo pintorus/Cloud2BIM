@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sv">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -12,7 +12,11 @@
 
 <header>
   <div class="logo">Cloud<span>2</span>BIM</div>
-  <div class="tagline">Automatisk Scan-to-BIM pipeline</div>
+  <div class="tagline" data-i18n="tagline">Automatic Scan-to-BIM pipeline</div>
+  <div class="lang-switch">
+    <button type="button" data-lang="en" onclick="window.setLang('en')">EN</button>
+    <button type="button" data-lang="fr" onclick="window.setLang('fr')">FR</button>
+  </div>
 </header>
 
 <main>
@@ -21,41 +25,41 @@
   <nav class="stepper">
     <div class="step active" data-step="1">
       <div class="num">1</div>
-      <span>Välj fil</span>
+      <span data-i18n="step.1">Select file</span>
     </div>
     <div class="step" data-step="2">
       <div class="num">2</div>
-      <span>Inställningar</span>
+      <span data-i18n="step.2">Settings</span>
     </div>
     <div class="step" data-step="3">
       <div class="num">3</div>
-      <span>Kör</span>
+      <span data-i18n="step.3">Run</span>
     </div>
     <div class="step" data-step="4">
       <div class="num">4</div>
-      <span>Resultat</span>
+      <span data-i18n="step.4">Results</span>
     </div>
   </nav>
 
   <!-- ── Step 1: Select file ────────────────────────────────────────────── -->
   <div class="step-panel" id="step-1">
     <div class="card">
-      <div class="card-title"><span class="icon">📂</span> Välj punktmolnsfil</div>
+      <div class="card-title"><span class="icon">📂</span> <span data-i18n="s1.title">Select point cloud file</span></div>
 
       <!-- Tabs -->
       <div class="upload-tabs">
-        <div class="upload-tab active" data-tab="upload">⬆ Ladda upp fil</div>
-        <div class="upload-tab" data-tab="network">🗂 Nätverksdisk</div>
-        <div class="upload-tab" data-tab="reuse">♻ Tidigare jobb</div>
+        <div class="upload-tab active" data-tab="upload" data-i18n="s1.tab.upload">⬆ Upload file</div>
+        <div class="upload-tab" data-tab="network" data-i18n="s1.tab.network">🗂 Network drive</div>
+        <div class="upload-tab" data-tab="reuse" data-i18n="s1.tab.reuse">♻ Previous jobs</div>
       </div>
 
       <!-- Upload panel -->
       <div id="upload-panel">
         <div id="drop-zone" class="drop-zone">
           <div class="drop-icon">📡</div>
-          <strong>Dra och släpp din fil här</strong>
-          <p>eller klicka för att bläddra — stöd för .xyz, .e57, .las, .laz</p>
-          <p style="margin-top:8px;font-size:11px;color:var(--text-dim)">Stora filer laddas upp i 10 MB-bitar</p>
+          <strong data-i18n="s1.drop.title">Drag and drop your file here</strong>
+          <p data-i18n="s1.drop.hint">or click to browse — supports .xyz, .e57, .las, .laz</p>
+          <p style="margin-top:8px;font-size:11px;color:var(--text-dim)" data-i18n="s1.drop.chunk">Large files are uploaded in 10 MB chunks</p>
         </div>
         <input type="file" id="file-input" accept=".xyz,.e57,.las,.laz">
 
@@ -72,23 +76,26 @@
 
       <!-- Network panel -->
       <div id="network-panel" style="display:none">
-        <div class="alert alert-info">
-          ℹ️ Konfigurerade nätverksdiskar visas nedan. Välj en fil för att fortsätta.
+        <div class="alert alert-info" data-i18n="s1.network.info">
+          ℹ️ Configured network drives are shown below. Select a file to continue.
         </div>
       </div>
 
       <!-- Reuse panel -->
       <div id="reuse-panel" style="display:none">
-        <div class="alert alert-info">
-          ♻ Välj ett tidigare jobb för att köra om detekteringen med nya inställningar — konverteringssteget hoppas över.
+        <div class="alert alert-info" data-i18n="s1.reuse.info">
+          ♻ Select a previous job to re-run detection with new settings — the conversion step is skipped.
         </div>
         <div id="reuse-list" style="margin-top:8px"></div>
       </div>
     </div>
 
     <div class="btn-row">
+      <button type="button" class="btn btn-outline" id="btn-preview-1" style="display:none" onclick="window.openPreview3D()">
+        <span data-i18n="s1.preview">👁&nbsp; Preview 3D</span>
+      </button>
       <button type="button" class="btn btn-primary" id="btn-next-1" disabled onclick="window.onNext1()">
-        Nästa: Inställningar →
+        <span data-i18n="s1.next">Next: Settings →</span>
       </button>
     </div>
   </div>
@@ -96,80 +103,84 @@
   <!-- ── Step 2: Configuration ──────────────────────────────────────────── -->
   <div class="step-panel" id="step-2" style="display:none">
     <div class="card">
-      <div class="card-title"><span class="icon">⚙️</span> Grundinställningar</div>
+      <div class="card-title"><span class="icon">⚙️</span> <span data-i18n="s2.title">Basic settings</span></div>
 
-      <div class="section-label">Filformat</div>
-      <div class="alert alert-info" id="format-info" style="margin-bottom:16px">
-        Format detekteras automatiskt från filändelsen (.xyz / .e57 / .las / .laz)
+      <div class="section-label" data-i18n="s2.format">File format</div>
+      <div class="alert alert-info" id="format-info" style="margin-bottom:16px" data-i18n="s2.format.hint">
+        Format is automatically detected from the file extension (.xyz / .e57 / .las / .laz)
       </div>
       <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px">
         <label class="toggle-group">
-          <span class="toggle"><input type="checkbox" id="exterior-scan"><span class="toggle-slider"></span></span>
-          Exteriör skanning
+          <span data-i18n="s2.scan.type">Scan type</span>
+          <select id="scan-type" class="input" style="margin-left:8px">
+            <option value="auto" data-i18n="s2.scan.auto">Auto-detect</option>
+            <option value="interior" data-i18n="s2.scan.interior">Interior</option>
+            <option value="exterior" data-i18n="s2.scan.exterior">Exterior</option>
+          </select>
         </label>
       </div>
 
-      <div class="section-label">Punktmoln</div>
+
+      <div class="section-label" data-i18n="s2.pointcloud">Point cloud</div>
       <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px">
         <label class="toggle-group">
-          <span class="toggle"><input type="checkbox" id="dilute"><span class="toggle-slider"></span></span>
-          Gleslägg punktmoln
+          <span class="toggle"><input type="checkbox" id="clean-enabled"><span class="toggle-slider"></span></span>
+          <span data-i18n="s2.clean">Point cloud cleaning (decimate)</span>
         </label>
+      </div>
+      <div class="alert alert-info" id="clean-hint" style="display:none;margin-bottom:16px" data-i18n="s2.clean.hint">
+        🧹 A “Point cloud cleaning” step will be added so you can configure decimation, noise removal and preview the result before / after.
       </div>
       <div class="form-grid">
         <div class="form-group">
-          <label for="pc-resolution">Punktmolnsupplösning (m)</label>
+          <label for="pc-resolution" data-i18n="s2.pc.resolution">Point cloud resolution (m)</label>
           <input type="number" id="pc-resolution" value="0.002" step="0.001" min="0.001">
         </div>
         <div class="form-group">
-          <label for="dilution-factor">Glesläggningsfaktor (var n:te punkt)</label>
-          <input type="number" id="dilution-factor" value="10" min="2">
-        </div>
-        <div class="form-group">
-          <label for="grid-coefficient">Gridkoefficient</label>
+          <label for="grid-coefficient" data-i18n="s2.grid.coefficient">Grid coefficient</label>
           <input type="number" id="grid-coefficient" value="5" min="1">
         </div>
         <div class="form-group">
-          <label for="material">Material</label>
+          <label for="material" data-i18n="s2.material">Material</label>
           <select id="material">
-            <option value="Concrete">Betong</option>
-            <option value="Brick">Tegel</option>
-            <option value="Wood">Trä</option>
-            <option value="Steel">Stål</option>
-            <option value="Unknown">Okänt</option>
+            <option value="Concrete" data-i18n="s2.material.concrete">Concrete</option>
+            <option value="Brick" data-i18n="s2.material.brick">Brick</option>
+            <option value="Wood" data-i18n="s2.material.wood">Wood</option>
+            <option value="Steel" data-i18n="s2.material.steel">Steel</option>
+            <option value="Unknown" data-i18n="s2.material.unknown">Unknown</option>
           </select>
         </div>
       </div>
 
       <!-- Advanced: Wall & slab params -->
       <div class="collapsible-header" id="adv-toggle">
-        Avancerade parametrar (väggar & bjälklag)
+        <span data-i18n="s2.advanced">Advanced parameters (walls &amp; slabs)</span>
         <span class="collapsible-arrow">▾</span>
       </div>
       <div class="collapsible-body" id="adv-body">
         <div class="form-grid">
           <div class="form-group">
-            <label for="bfs-thickness">Golvbjälklag tjocklek (m)</label>
+            <label for="bfs-thickness" data-i18n="s2.bfs">Floor slab thickness (m)</label>
             <input type="number" id="bfs-thickness" value="0.3" step="0.05" min="0.05">
           </div>
           <div class="form-group">
-            <label for="tfs-thickness">Takbjälklag tjocklek (m)</label>
+            <label for="tfs-thickness" data-i18n="s2.tfs">Roof slab thickness (m)</label>
             <input type="number" id="tfs-thickness" value="0.4" step="0.05" min="0.05">
           </div>
           <div class="form-group">
-            <label for="min-wall-length">Min vägglängd (m)</label>
+            <label for="min-wall-length" data-i18n="s2.min.wall.length">Min wall length (m)</label>
             <input type="number" id="min-wall-length" value="0.10" step="0.05" min="0.05">
           </div>
           <div class="form-group">
-            <label for="min-wall-thickness">Min väggtjocklek (m)</label>
+            <label for="min-wall-thickness" data-i18n="s2.min.wall.thickness">Min wall thickness (m)</label>
             <input type="number" id="min-wall-thickness" value="0.05" step="0.01">
           </div>
           <div class="form-group">
-            <label for="max-wall-thickness">Max väggtjocklek (m)</label>
+            <label for="max-wall-thickness" data-i18n="s2.max.wall.thickness">Max wall thickness (m)</label>
             <input type="number" id="max-wall-thickness" value="0.75" step="0.05">
           </div>
           <div class="form-group">
-            <label for="ext-wall-thickness">Ytterväggar tjocklek (m)</label>
+            <label for="ext-wall-thickness" data-i18n="s2.ext.wall.thickness">Exterior wall thickness (m)</label>
             <input type="number" id="ext-wall-thickness" value="0.3" step="0.05">
           </div>
         </div>
@@ -177,58 +188,58 @@
 
       <!-- IFC Metadata -->
       <div class="collapsible-header" id="ifc-toggle">
-        IFC-metadata (projekt &amp; byggnad)
+        <span data-i18n="s2.ifc.metadata">IFC metadata (project &amp; building)</span>
         <span class="collapsible-arrow">▾</span>
       </div>
       <div class="collapsible-body" id="ifc-body">
-        <div class="section-label" style="margin-top:0">Projekt</div>
+        <div class="section-label" style="margin-top:0" data-i18n="s2.project">Project</div>
         <div class="form-grid" style="margin-bottom:16px">
           <div class="form-group">
-            <label>Projektnamn</label>
+            <label data-i18n="s2.project.name">Project name</label>
             <input type="text" id="ifc-project-name" value="Cloud2BIM Project">
           </div>
           <div class="form-group">
-            <label>Långt projektnamn</label>
+            <label data-i18n="s2.project.long.name">Long project name</label>
             <input type="text" id="ifc-project-long-name" value="Scan to BIM">
           </div>
           <div class="form-group">
-            <label>Version</label>
+            <label data-i18n="s2.project.version">Version</label>
             <input type="text" id="ifc-project-version" value="1.0">
           </div>
         </div>
 
-        <div class="section-label">Författare</div>
+        <div class="section-label" data-i18n="s2.author">Author</div>
         <div class="form-grid" style="margin-bottom:16px">
           <div class="form-group">
-            <label>Förnamn</label>
+            <label data-i18n="s2.author.first">First name</label>
             <input type="text" id="ifc-author-name">
           </div>
           <div class="form-group">
-            <label>Efternamn</label>
+            <label data-i18n="s2.author.last">Last name</label>
             <input type="text" id="ifc-author-surname">
           </div>
           <div class="form-group">
-            <label>Organisation</label>
+            <label data-i18n="s2.author.org">Organization</label>
             <input type="text" id="ifc-author-org">
           </div>
         </div>
 
-        <div class="section-label">Byggnad</div>
+        <div class="section-label" data-i18n="s2.building">Building</div>
         <div class="form-grid">
           <div class="form-group">
-            <label>Byggnadsnamn</label>
+            <label data-i18n="s2.building.name">Building name</label>
             <input type="text" id="ifc-building-name">
           </div>
           <div class="form-group">
-            <label>Byggnadstyp</label>
-            <input type="text" id="ifc-building-type" placeholder="t.ex. Office, Hotel…">
+            <label data-i18n="s2.building.type">Building type</label>
+            <input type="text" id="ifc-building-type" data-i18n-placeholder="s2.building.type.ph" placeholder="e.g. Office, Hotel…">
           </div>
           <div class="form-group">
-            <label>Fas</label>
-            <input type="text" id="ifc-building-phase" placeholder="t.ex. Reconstruction">
+            <label data-i18n="s2.building.phase">Phase</label>
+            <input type="text" id="ifc-building-phase" data-i18n-placeholder="s2.building.phase.ph" placeholder="e.g. Reconstruction">
           </div>
           <div class="form-group">
-            <label>Höjd över havet (m)</label>
+            <label data-i18n="s2.elevation">Elevation above sea level (m)</label>
             <input type="number" id="ifc-elevation" value="0.0" step="1">
           </div>
         </div>
@@ -236,8 +247,80 @@
     </div>
 
     <div class="btn-row">
-      <button type="button" class="btn btn-outline" id="btn-back-2" onclick="window.goTo(1)">← Tillbaka</button>
-      <button type="button" class="btn btn-primary" id="btn-next-2" onclick="window.goTo(3)">Nästa: Kör pipeline →</button>
+      <button type="button" class="btn btn-outline" id="btn-back-2" onclick="window.goBack()"><span data-i18n="s2.back">← Back</span></button>
+      <button type="button" class="btn btn-primary" id="btn-next-2" onclick="window.goNext()"><span data-i18n="s2.next">Next: Run pipeline →</span></button>
+    </div>
+  </div>
+
+  <!-- ── Step 3: Point cloud cleaning (dynamic) ─────────────────────────── -->
+  <div class="step-panel" id="step-clean" style="display:none">
+    <div class="card">
+      <div class="card-title"><span class="icon">🧹</span> <span data-i18n="sc.title">Point cloud cleaning</span></div>
+
+      <div class="alert alert-info" style="margin-bottom:16px" data-i18n="sc.info">
+        ℹ️ Configure decimation and noise removal, then preview the cloud before and after cleaning. These settings are applied by the pipeline.
+      </div>
+
+      <div class="section-label" data-i18n="sc.decimate">Decimation</div>
+      <div class="form-grid" style="margin-bottom:16px">
+        <div class="form-group">
+          <label for="voxel-size" data-i18n="sc.voxel">Voxel size (m, 0 = off)</label>
+          <input type="number" id="voxel-size" value="0.02" step="0.005" min="0">
+        </div>
+      </div>
+
+      <div class="section-label" data-i18n="sc.noise">Noise removal</div>
+      <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:12px">
+        <label class="toggle-group">
+          <span class="toggle"><input type="checkbox" id="clean-sor"><span class="toggle-slider"></span></span>
+          <span data-i18n="sc.sor">Statistical outlier removal</span>
+        </label>
+        <label class="toggle-group">
+          <span class="toggle"><input type="checkbox" id="clean-ror"><span class="toggle-slider"></span></span>
+          <span data-i18n="sc.ror">Radius outlier removal</span>
+        </label>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="sor-k" data-i18n="sc.sor.k">Neighbours (k)</label>
+          <input type="number" id="sor-k" value="8" min="2">
+        </div>
+        <div class="form-group">
+          <label for="sor-std" data-i18n="sc.sor.std">Std-dev ratio</label>
+          <input type="number" id="sor-std" value="2.0" step="0.1" min="0.1">
+        </div>
+        <div class="form-group">
+          <label for="ror-radius" data-i18n="sc.ror.radius">Radius (m)</label>
+          <input type="number" id="ror-radius" value="0.05" step="0.01" min="0.001">
+        </div>
+        <div class="form-group">
+          <label for="ror-min" data-i18n="sc.ror.min">Min neighbours</label>
+          <input type="number" id="ror-min" value="4" min="1">
+        </div>
+      </div>
+
+      <div class="section-label" data-i18n="sc.preview">Before / after preview</div>
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+        <button type="button" class="btn btn-outline" id="btn-clean-optimize" onclick="window.optimizeClean()">
+          <span data-i18n="sc.optimize">🪄 Optimize</span>
+        </button>
+        <button type="button" class="btn btn-outline" id="btn-clean-preview" onclick="window.refreshCleanPreview()">
+          <span data-i18n="sc.preview.refresh">↻ Refresh preview</span>
+        </button>
+        <span id="clean-optimize-hint" style="font-size:12px;color:var(--text-dim);display:none"></span>
+        <span id="clean-preview-hint" style="font-size:12px;color:var(--text-dim)" data-i18n="sc.preview.hint"></span>
+      </div>
+      <div id="clean-preview-wrap" style="position:relative;height:440px;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#0f1117">
+        <div id="clean-preview-empty" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;color:var(--text-dim);font-size:13px" data-i18n="sc.preview.empty">
+          Click “Refresh preview” to compare the cloud before and after cleaning.
+        </div>
+        <iframe id="clean-preview-frame" style="display:none;width:100%;height:100%;border:0" title="Point cloud cleaning preview"></iframe>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button type="button" class="btn btn-outline" onclick="window.goBack()"><span data-i18n="sc.back">← Back</span></button>
+      <button type="button" class="btn btn-primary" onclick="window.goNext()"><span data-i18n="sc.next">Next: Run pipeline →</span></button>
     </div>
   </div>
 
@@ -245,23 +328,31 @@
   <div class="step-panel" id="step-3" style="display:none">
     <div class="card">
       <div class="card-title" style="justify-content:space-between">
-        <span><span class="icon">▶</span> Kör pipeline</span>
-        <span id="status-badge" class="status-badge pending">Väntar</span>
+        <span><span class="icon">▶</span> <span data-i18n="s3.title">Run pipeline</span></span>
+        <span id="status-badge" class="status-badge pending" data-i18n="s3.badge.pending">Waiting</span>
       </div>
 
-      <div class="alert alert-info" style="margin-bottom:16px">
-        ℹ️ Processen kan ta flera minuter för stora filer. Stäng inte fönstret.
+      <div class="alert alert-info" style="margin-bottom:16px" data-i18n="s3.info">
+        ℹ️ The process may take several minutes for large files. Do not close this window.
+      </div>
+
+      <div class="progress-wrap" id="job-progress" style="margin-bottom:16px">
+        <div class="progress-label">
+          <span id="job-stage" data-i18n="progress.stage.pending">Waiting</span>
+          <span id="job-pct">0 %</span>
+        </div>
+        <div class="progress-bar"><div class="progress-bar-fill" id="job-progress-fill" style="width:0%"></div></div>
       </div>
 
       <div id="log-console" class="log-console">
-        <div class="log-line" style="color:var(--text-dim)">Loggar visas här när processen startar…</div>
+        <div class="log-line" style="color:var(--text-dim)" data-i18n="s3.log.placeholder">Logs will appear here when the process starts…</div>
       </div>
     </div>
 
     <div class="btn-row">
-      <button type="button" class="btn btn-outline" id="btn-back-3" onclick="window.goTo(2)">← Tillbaka</button>
+      <button type="button" class="btn btn-outline" id="btn-back-3" onclick="window.goBack()"><span data-i18n="s3.back">← Back</span></button>
       <button class="btn btn-primary btn-lg" id="btn-run">
-        ▶&nbsp; Starta Cloud2BIM
+        <span data-i18n="s3.run">▶&nbsp; Start Cloud2BIM</span>
       </button>
     </div>
   </div>
@@ -269,10 +360,10 @@
   <!-- ── Step 4: Results ────────────────────────────────────────────────── -->
   <div class="step-panel" id="step-4" style="display:none">
     <div class="card">
-      <div class="card-title"><span class="icon">✅</span> Resultat</div>
+      <div class="card-title"><span class="icon">✅</span> <span data-i18n="s4.title">Results</span></div>
 
-      <div class="alert alert-success" style="margin-bottom:20px">
-        ✓ IFC-modellen är genererad och redo att laddas ned.
+      <div class="alert alert-success" style="margin-bottom:20px" data-i18n="s4.ready">
+        ✓ The IFC model has been generated and is ready to download.
       </div>
 
       <div id="result-stats" class="result-summary">
@@ -281,10 +372,13 @@
 
       <div style="display:flex;gap:12px;flex-wrap:wrap">
         <a id="btn-download" class="btn btn-success btn-lg" style="display:none;text-decoration:none" download>
-          ⬇&nbsp; Ladda ned IFC-fil
+          <span data-i18n="s4.download">⬇&nbsp; Download IFC file</span>
         </a>
-        <button type="button" id="btn-open-viewer" class="btn btn-primary btn-lg" style="display:none" onclick="window.open('/static/bim-viewer.html?job='+window._state.jobId,'_blank')">
-          🏗&nbsp; Öppna 3D-viewer
+        <button type="button" id="btn-open-viewer" class="btn btn-primary btn-lg" style="display:none" onclick="window.open('/static/bim-viewer.html?job='+window._state.jobId+(window.getLang()==='fr'?'&lang=fr':''),'_blank')">
+          <span data-i18n="s4.viewer">🏗&nbsp; Open 3D viewer</span>
+        </button>
+        <button type="button" id="btn-open-pc" class="btn btn-outline btn-lg" style="display:none" onclick="window.open('/static/bim-viewer.html?job='+window._state.jobId+'&view=points'+(window.getLang()==='fr'?'&lang=fr':''),'_blank')">
+          <span data-i18n="s4.pointcloud">⚈&nbsp; View point cloud</span>
         </button>
       </div>
     </div>
@@ -292,22 +386,23 @@
     <!-- Floor plan preview -->
     <div class="card" style="padding:0;overflow:hidden">
       <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
-        <div class="card-title" style="margin-bottom:0"><span class="icon">🗺</span> Planlösning</div>
-        <div style="font-size:11px;color:var(--text-dim)">Genererad av pipeline</div>
+        <div class="card-title" style="margin-bottom:0"><span class="icon">🗺</span> <span data-i18n="s4.floorplan">Floor plan</span></div>
+        <div style="font-size:11px;color:var(--text-dim)" data-i18n="s4.floorplan.by">Generated by the pipeline</div>
       </div>
       <div id="preview-container" style="background:#0f1117;min-height:200px;display:flex;align-items:center;justify-content:center">
-        <div id="preview-loading" style="color:var(--text-dim);font-size:13px">Laddar förhandsgranskning…</div>
+        <div id="preview-loading" style="color:var(--text-dim);font-size:13px" data-i18n="s4.preview.loading">Loading preview…</div>
         <img id="preview-img" style="display:none;max-width:100%;height:auto" alt="Floor plan">
       </div>
     </div>
 
     <div class="btn-row">
-      <button type="button" class="btn btn-outline" onclick="window.newFile()">+ Ny fil</button>
+      <button type="button" class="btn btn-outline" onclick="window.newFile()"><span data-i18n="s4.new.file">+ New file</span></button>
     </div>
   </div>
 
 </main>
 
+<script src="/static/js/i18n.js"></script>
 <script src="/static/js/app.js"></script>
 <script type="module">
   import { loadViewer } from '/static/js/viewer.js';

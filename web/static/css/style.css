@@ -40,6 +40,31 @@ header .logo { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
 header .logo span { color: var(--accent); }
 header .tagline { color: var(--text-dim); font-size: 13px; }
 
+/* ── Language switcher ──────────────────────────────────────────────────── */
+.lang-switch {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+}
+.lang-switch button {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.lang-switch button:hover { color: var(--text); }
+.lang-switch button.active { background: var(--accent); color: #fff; }
+
 main { max-width: 960px; margin: 0 auto; padding: 32px 24px 80px; }
 
 /* ── Stepper ─────────────────────────────────────────────────────────────── */
@@ -135,6 +160,9 @@ main { max-width: 960px; margin: 0 auto; padding: 32px 24px 80px; }
   display: none;
 }
 .progress-wrap.visible { display: block; }
+/* Job progress bar reuses the upload styles but is always visible when rendered */
+#job-progress { margin-top: 0; display: none; }
+#job-progress.visible { display: block; }
 .progress-label {
   display: flex; justify-content: space-between;
   font-size: 12px; color: var(--text-dim);
@@ -150,6 +178,8 @@ main { max-width: 960px; margin: 0 auto; padding: 32px 24px 80px; }
   transition: width 0.3s ease;
   width: 0%;
 }
+.progress-bar-fill.done { background: var(--success); }
+.progress-bar-fill.failed { background: var(--danger); }
 
 /* ── File browser ─────────────────────────────────────────────────────────── */
 .browser-path {

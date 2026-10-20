@@ -9,6 +9,7 @@ export async function loadViewer(jobId) {
   if (!img) return;
 
   const url = `/api/jobs/${jobId}/preview`;
+  const t   = window.t;
 
   // Poll up to 30 s for the preview PNG (pipeline generates it last)
   for (let i = 0; i < 30; i++) {
@@ -22,5 +23,5 @@ export async function loadViewer(jobId) {
     await new Promise(r => setTimeout(r, 1000));
   }
 
-  if (loading) loading.textContent = 'Förhandsgranskning ej tillgänglig.';
+  if (loading) loading.textContent = t('s4.preview.unavailable');
 }

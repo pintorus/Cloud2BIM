@@ -91,8 +91,16 @@ def load_config_and_variables():
         "e57_input": config["e57_input"],
         "xyz_filenames": config["xyz_files"],
         "exterior_scan": config["exterior_scan"],
+        "scan_type_interior_threshold": config.get("scan_type_interior_threshold", 0.75),
+        "scan_type_exterior_threshold": config.get("scan_type_exterior_threshold", 0.40),
         "dilute_pointcloud": config["dilute"],
         "dilution_factor": config["dilution_factor"],
+        "clean_enabled": config.get("clean_enabled", False),
+        "voxel_size": config.get("voxel_size", 0.0),
+        "sor_k": config.get("sor_k", 0),
+        "sor_std_ratio": config.get("sor_std_ratio", 2.0),
+        "ror_radius": config.get("ror_radius", 0.0),
+        "ror_min_neighbors": config.get("ror_min_neighbors", 4),
         "pc_resolution": config["pc_resolution"],
         "grid_coefficient": config["grid_coefficient"],
         "bfs_thickness": config["bfs_thickness"],
@@ -101,6 +109,14 @@ def load_config_and_variables():
         "min_wall_thickness": config["min_wall_thickness"],
         "max_wall_thickness": config["max_wall_thickness"],
         "exterior_walls_thickness": config["exterior_walls_thickness"],
+        "wall_band_low": config.get("wall_band_low", 0.30),
+        "wall_band_high": config.get("wall_band_high", 0.70),
+        "mask_erode": config.get("mask_erode", 3),
+        "merge_fragments": config.get("merge_fragments", True),
+        "merge_angle_tolerance_deg": config.get("merge_angle_tolerance_deg", 10.0),
+        "merge_max_axis_gap": config.get("merge_max_axis_gap", 1.0),
+        "merge_min_offset_tolerance": config.get("merge_min_offset_tolerance", 0.3),
+        "opening_histogram_threshold": config.get("opening_histogram_threshold", 0.85),
         "ifc_output_file": config["output_ifc"],
         "ifc_project_name": config["ifc_project_name"],
         "ifc_project_long_name": config["ifc_project_long_name"],
@@ -143,11 +159,23 @@ def read_e57(file_name):
     return e57_array
 
 
-def e57_data_to_xyz(e57_data, output_file_name, chunk_size=10000):
+def e57_data_to_xyz(e57_data, output_file_name, chunk_size=10000, progress_cb=None):
+    """Convert E57 scan data to a tab-separated XYZ file.
+
+    progress_cb: optional callable(fraction) invoked after each chunk with a
+    0.0–1.0 completion fraction, used by the web UI progress bar.
+    """
     points = e57_data.points
     n_points = points.shape[0]
-    colors = e57_data.color
-    intensities = e57_data.intensity
+    colors = np.asarray(e57_data.color)
+    intensities = np.asarray(e57_data.intensity)
+
+    # Some E57 files carry no color and/or intensity channels (shape (0, 3)
+    # or (0, 1)) — substitute zero-filled columns so all arrays match.
+    if colors.ndim != 2 or colors.shape[0] != n_points:
+        colors = np.zeros((n_points, 3))
+    if intensities.ndim != 2 or intensities.shape[0] != n_points:
+        intensities = np.zeros((n_points, 1))
 
     num_chunks = int((n_points - 1) // chunk_size + 1)  # Compute the number of chunks
 
@@ -172,6 +200,9 @@ def e57_data_to_xyz(e57_data, output_file_name, chunk_size=10000):
             df.to_csv(output_file_name, sep='\t', index=False, header=False, mode='a')
         else:
             df.to_csv(output_file_name, sep='\t', index=False, header=True, mode='a')
+
+        if progress_cb is not None:
+            progress_cb((i + 1) / num_chunks)
 
 
 def save_xyz(points, output_file_name):
@@ -422,6 +453,52 @@ def identify_slabs(points_xyz, points_rgb, bottom_floor_slab_thickness, top_floo
         o3d.visualization.draw_geometries(pcd)
 
     return slabs, horiz_surface_planes
+
+
+def _polygon_rectangularity(polygon):
+    """Area of a polygon divided by the area of its axis-aligned bounding box.
+
+    1.0 for a perfect rectangle, small for an irregular strip. Returns None when
+    the polygon is degenerate.
+    """
+    if polygon is None:
+        return None
+    try:
+        xy = polygon.get_xy()
+    except AttributeError:
+        return None
+    if xy is None or len(xy) < 3:
+        return None
+    x, y = xy[:, 0], xy[:, 1]
+    bbox = (float(x.max()) - float(x.min())) * (float(y.max()) - float(y.min()))
+    if bbox <= 0:
+        return None
+    area = 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+    return area / bbox
+
+
+def classify_scan(slabs, interior_threshold=0.75, exterior_threshold=0.40):
+    """Classify a scan as ``interior``, ``exterior``, ``mixed`` or ``unknown``.
+
+    An interior scan captures a full, roughly rectangular floor and ceiling, so
+    its slab hulls fill their bounding box (high rectangularity). A facade or
+    partial scan only captures narrow irregular strips, leaving the hull covering
+    a small fraction of the extent.
+
+    Returns ``unknown`` when fewer than two slabs were found or the polygons are
+    degenerate, which is itself a signal that the scan is unusable.
+    """
+    if not slabs or len(slabs) < 2:
+        return "unknown"
+    ratios = [r for r in (_polygon_rectangularity(s.get("polygon")) for s in slabs) if r is not None]
+    if not ratios:
+        return "unknown"
+    rect = min(ratios)
+    if rect >= interior_threshold:
+        return "interior"
+    if rect <= exterior_threshold:
+        return "exterior"
+    return "mixed"
 
 
 def split_pointcloud_to_storeys(points_xyz, slabs):
@@ -886,6 +963,111 @@ def adjust_intersections(wall_axes, max_wall_thickness):
     return wall_axes
 
 
+def merge_wall_fragments(wall_axes, wall_thicknesses, parallel_groups, wall_labels,
+                         angle_tolerance_deg=10.0, max_axis_gap=1.0, min_offset_tolerance=0.3):
+    """Merge wall fragments that belong to the same physical wall.
+
+    Openings (doors/windows) split a wall into several fragments, and the two
+    faces of a thick wall can be recovered as separate overlapping fragments.
+    Both produce a cluster of nearly-collinear, co-planar axes for a single
+    wall; this merges each cluster into one axis so the wall is emitted once.
+
+    Two axes are merged when their directions differ by less than
+    ``angle_tolerance_deg``, their perpendicular offset is within half the sum
+    of their thicknesses (and at least ``min_offset_tolerance``), and the gap
+    between them along the axis is at most ``max_axis_gap`` (a bit more than a
+    door width, so fragments on either side of an opening still join).
+
+    Returns ``(axes, thicknesses, groups, labels)`` for the merged walls.
+    """
+    n = len(wall_axes)
+    if n < 2:
+        return wall_axes, wall_thicknesses, parallel_groups, wall_labels
+
+    ends, dirs, mids = [], [], []
+    for axis in wall_axes:
+        p0 = np.array(axis[0], dtype=float)
+        p1 = np.array(axis[1], dtype=float)
+        length = float(np.hypot(*(p1 - p0)))
+        if length == 0:
+            ends.append(None); dirs.append(None); mids.append(None)
+        else:
+            ends.append((p0, p1)); dirs.append((p1 - p0) / length); mids.append((p0 + p1) / 2.0)
+
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
+    # Compare each pair in a single reference frame so that a fragment detected
+    # as (dx, +dy) and its sibling as (-dx, -dy) are still comparable: the
+    # perpendicular offset uses the first axis's normal, and both intervals are
+    # projected onto the first axis's direction.
+    min_cos = math.cos(math.radians(angle_tolerance_deg))
+    for i in range(n):
+        if dirs[i] is None:
+            continue
+        for j in range(i + 1, n):
+            if dirs[j] is None:
+                continue
+            if abs(float(np.dot(dirs[i], dirs[j]))) < min_cos:
+                continue  # not parallel
+            normal = np.array([-dirs[i][1], dirs[i][0]])
+            tol = max(0.5 * (wall_thicknesses[i] + wall_thicknesses[j]), min_offset_tolerance)
+            if abs(float(np.dot(normal, mids[i] - mids[j]))) > tol:
+                continue
+            ti = sorted(float(np.dot(dirs[i], p)) for p in ends[i])
+            tj = sorted(float(np.dot(dirs[i], p)) for p in ends[j])
+            gap = max(ti[0], tj[0]) - min(ti[1], tj[1])
+            if gap > max_axis_gap:
+                continue
+            union(i, j)
+
+    clusters = {}
+    for i in range(n):
+        clusters.setdefault(find(i), []).append(i)
+
+    new_axes, new_thicknesses, new_groups, new_labels = [], [], [], []
+    for members in clusters.values():
+        valid = [i for i in members if dirs[i] is not None]
+        if len(valid) <= 1:
+            i = members[0]
+            new_axes.append(wall_axes[i])
+            new_thicknesses.append(wall_thicknesses[i])
+            new_groups.append(parallel_groups[i])
+            new_labels.append(wall_labels[i])
+            continue
+
+        lengths = np.array([float(np.hypot(*(ends[i][1] - ends[i][0]))) for i in valid])
+        weights = lengths / lengths.sum() if lengths.sum() > 0 else np.ones(len(valid)) / len(valid)
+        reference = dirs[valid[int(np.argmax(lengths))]]
+        aligned = [dirs[i] if float(np.dot(dirs[i], reference)) >= 0 else -dirs[i] for i in valid]
+        d = sum(float(w) * a for w, a in zip(weights, aligned))
+        norm = float(np.linalg.norm(d))
+        d = d / norm if norm > 0 else reference.copy()
+        normal = np.array([-d[1], d[0]])
+
+        c = sum(float(w) * float(np.dot(normal, mids[i])) for w, i in zip(weights, valid))
+        ts = [float(np.dot(d, p)) for i in valid for p in ends[i]]
+        t0, t1 = min(ts), max(ts)
+        new_axes.append([[float(t0 * d[0] + c * normal[0]), float(t0 * d[1] + c * normal[1])],
+                         [float(t1 * d[0] + c * normal[0]), float(t1 * d[1] + c * normal[1])]])
+        new_thicknesses.append(float(np.average([wall_thicknesses[i] for i in valid], weights=weights)))
+        new_groups.append([seg for i in valid for seg in parallel_groups[i]])
+        new_labels.append(wall_labels[valid[0]])
+
+    print("[INFO] merge_wall_fragments: %d wall axes -> %d after merging fragments" % (n, len(new_axes)))
+    return new_axes, new_thicknesses, new_groups, new_labels
+
+
 def plot_parallel_groups(groups, wall_axes, binary_image, points_2d, x_min, x_max, y_min, y_max, storey):
     fig = plt.figure(figsize=(10, 8))
 
@@ -950,17 +1132,38 @@ def swell_polygon(vertices, thickness):
 
 def identify_walls(pointcloud, pointcloud_resolution, minimum_wall_length, minimum_wall_thickness,
                    maximum_wall_thickness, z_floor, z_ceiling, grid_coefficient=5, slab_polygon=None,
-                   exterior_scan=False, exterior_walls_thickness=0.3):
+                   exterior_scan=False, exterior_walls_thickness=0.3,
+                   wall_band_low=0.30, wall_band_high=0.70, wall_band_z=None,
+                   mask_erode=3, merge_fragments=True,
+                   merge_angle_tolerance_deg=10.0, merge_max_axis_gap=1.0,
+                   merge_min_offset_tolerance=0.3):
     x_coords_arr = pointcloud[:, 0]
     y_coords_arr = pointcloud[:, 1]
     z_coords_arr = pointcloud[:, 2]
-    z_section_boundaries = [0.85, 1.2]  # percentage of the height for the storey sections
 
-    # Calculate z-coordinate limits
-    z_max_in_point_cloud = z_coords_arr.max()
-    z_min_in_point_cloud = z_coords_arr.min()
-    z_max = z_min_in_point_cloud + z_section_boundaries[1] * (z_max_in_point_cloud - z_min_in_point_cloud)
-    z_min = z_min_in_point_cloud + z_section_boundaries[0] * (z_max_in_point_cloud - z_min_in_point_cloud)
+    # ── Wall sampling band ────────────────────────────────────────────────
+    # Anchor the band on the known storey extent (z_floor = z_placement,
+    # z_ceiling = top_z_placement) instead of the raw min/max of the point
+    # cloud. The raw range includes the slab layers, so a fractional band of it
+    # lands on the floor/ceiling slab rather than on the walls, and the 2D mask
+    # degenerates into the slab rectangle (no interior wall evidence at all).
+    # wall_band_z, when given, is the slab-free wall zone supplied by the caller
+    # (top of the lower slab -> bottom of the upper slab).
+    if wall_band_z is not None:
+        _base = float(wall_band_z[0])
+        _span = float(wall_band_z[1]) - _base
+    else:
+        _span = float(z_ceiling) - float(z_floor)
+        _base = float(z_floor) if np.isfinite(_span) and _span > 0 else float(z_coords_arr.min())
+        if not np.isfinite(_span) or _span <= 0:
+            _span = float(z_coords_arr.max() - z_coords_arr.min())
+    z_max = _base + wall_band_high * _span
+    z_min = _base + wall_band_low * _span
+    if z_max <= z_min:
+        print("[WARNING] identify_walls: invalid wall band (%.2f, %.2f]." % (z_min, z_max))
+        return [], [], [], [], [], []
+    print("[INFO] identify_walls: sampling band %.2f..%.2f m (%.0f%%..%.0f%% of wall zone %.2f..%.2f m)."
+          % (z_min, z_max, 100 * wall_band_low, 100 * wall_band_high, _base, _base + _span))
 
     # Filter points based on z-coordinate limits
     z_mask = (z_coords_arr >= z_min) & (z_coords_arr <= z_max)
@@ -1010,6 +1213,16 @@ def identify_walls(pointcloud, pointcloud_resolution, minimum_wall_length, minim
     # Pre-process the binary image
     print("Pre-processing the binary image")
     binary_image = closing(binary_image, footprint_rectangle((5, 5))) # closes small holes in the binary mask
+
+    # Thin the mask so a dense wall does not close up into a single solid band.
+    # Wall detection groups PAIRS of parallel contour lines separated by the
+    # wall thickness; on a full-resolution cloud both faces fill in and merge,
+    # leaving no pair to group. A small erosion re-separates them.
+    if mask_erode > 1:
+        _erode_kernel = np.ones((mask_erode, mask_erode), np.uint8)
+        binary_image = cv2.erode(binary_image, _erode_kernel, iterations=1)
+        print("Eroded mask by %dx%d to keep wall faces separated (%d px)"
+              % (mask_erode, mask_erode, int((binary_image > 0).sum())))
     plot_binary_image(binary_image)
 
     # Find contours in the binary image
@@ -1058,15 +1271,24 @@ def identify_walls(pointcloud, pointcloud_resolution, minimum_wall_length, minim
     parallel_groups, wall_labels, facade_wall_candidates = (
         group_segments(final_wall_segments, maximum_wall_thickness, 'interior'))
 
-    # Create facade wall surfaces into the list of exterior wall candidates
-    if not exterior_scan:
+    # Facade walls from the slab polygon are a SAFETY NET, not an option: they
+    # are the only guaranteed wall source when interior detection comes up empty
+    # (thin/partial scans, dense masks). Interior detection adds on top.
+    if slab_polygon is not None:
+        if exterior_scan:
+            print("[WARNING] identify_walls: exterior scan - the slab polygon hull is not a reliable "
+                  "wall source, polygon-derived walls are a rough fallback only.")
         swollen_polygon_segments = swell_polygon(slab_polygon.get_xy(), exterior_walls_thickness)
         facade_wall_candidates.extend(swollen_polygon_segments)
-        print("Grouping parallel exterior segments")
+        print("Grouping parallel exterior segments (%d polygon-derived candidates)" % len(swollen_polygon_segments))
         parallel_facade_groups, wall_labels_facade, _ = (
             group_segments(facade_wall_candidates, maximum_wall_thickness, 'exterior'))
+        _facade_before = len(parallel_groups)
         parallel_groups.extend(parallel_facade_groups)
         wall_labels.extend(wall_labels_facade)
+        print("Added %d facade wall group(s) from the slab polygon" % (len(parallel_groups) - _facade_before))
+    else:
+        print("[WARNING] identify_walls: no slab polygon, skipping facade wall candidates.")
 
     plot_parallel_wall_groups(parallel_groups)
     # plot_segments_with_candidates(facade_wall_candidates)
@@ -1077,7 +1299,10 @@ def identify_walls(pointcloud, pointcloud_resolution, minimum_wall_length, minim
         wall_axis, wall_thickness = calculate_wall_axis(group)
         if wall_axis is None:
             continue
-        if any(np.isnan(c) for pt in wall_axis for c in pt):
+        if not np.isfinite(wall_thickness) or any(
+                not np.isfinite(c) for pt in wall_axis for c in pt):
+            print("[INFO] identify_walls: dropping wall axis with non-finite geometry "
+                  "(thickness=%s)." % wall_thickness)
             continue
         wall_axes.append(wall_axis)
         wall_thicknesses.append(wall_thickness)
@@ -1087,9 +1312,42 @@ def identify_walls(pointcloud, pointcloud_resolution, minimum_wall_length, minim
     wall_labels = valid_wall_labels
 
     wall_axes = adjust_intersections(wall_axes, maximum_wall_thickness)
+
+    # Thicknesses used for point assignment must be the geometric distance
+    # between the two faces of a wall. calculate_wall_axis can return huge
+    # finite values for near-degenerate groups, so measure each *fragment*
+    # group geometrically instead and fall back to the median when a group is
+    # degenerate. merge_wall_fragments averages these per merged wall.
+    raw_thicknesses = [compute_wall_thickness(group) for group in parallel_groups]
+    max_t = 2.0 * maximum_wall_thickness
+    good = [t for t in raw_thicknesses if np.isfinite(t) and 0 < t <= max_t]
+    fallback = float(np.median(good)) if good else max(minimum_wall_thickness, 0.1)
+    wall_thicknesses = [float(t) if np.isfinite(t) and 0 < t <= max_t else fallback for t in raw_thicknesses]
+
+    if os.environ.get("CLOUD2BIM_DEBUG_AXES"):
+        for _i, _ax in enumerate(wall_axes):
+            _d = (wall_axes[_i][1][0] - wall_axes[_i][0][0], wall_axes[_i][1][1] - wall_axes[_i][0][1])
+            _ln = math.hypot(*_d)
+            if _ln:
+                _ang = math.degrees(math.atan2(_d[1], _d[0]) % math.pi)
+            else:
+                _ang = float("nan")
+            print("AXES i=%d len=%.2f ang=%.1f th=%.3f (%.2f,%.2f)-(%.2f,%.2f)"
+                  % (_i, _ln, _ang, wall_thicknesses[_i],
+                     wall_axes[_i][0][0], wall_axes[_i][0][1], wall_axes[_i][1][0], wall_axes[_i][1][1]))
+
+    if merge_fragments:
+        wall_axes, wall_thicknesses, parallel_groups, wall_labels = merge_wall_fragments(
+            wall_axes, wall_thicknesses, parallel_groups, wall_labels,
+            angle_tolerance_deg=merge_angle_tolerance_deg,
+            max_axis_gap=merge_max_axis_gap,
+            min_offset_tolerance=merge_min_offset_tolerance)
     # plot_parallel_groups(parallel_groups, wall_axes, binary_image, points_2d, x_min, x_max, y_min, y_max, storey)
 
-    start_points, end_points = zip(*wall_axes)
+    # A scan can yield no wall axes at all (empty parallel groups); zip(*[])
+    # would raise, so build the tuples directly and let them stay empty.
+    start_points = tuple(axis[0] for axis in wall_axes)
+    end_points = tuple(axis[1] for axis in wall_axes)
     wall_materials = ['Concrete'] * len(parallel_groups)
 
     # Calculate direction vectors for each wall axis
@@ -1097,15 +1355,17 @@ def identify_walls(pointcloud, pointcloud_resolution, minimum_wall_length, minim
 
     # Assign points to walls
     wall_groups, wall_thicknesses = assign_points_to_walls(x_coords, y_coords, z_coords, wall_axes, parallel_groups,
-                                                           z_floor, z_ceiling)
+                                                           z_floor, z_ceiling,
+                                                           wall_thicknesses=wall_thicknesses)
 
     # Rotate each group of points to the x-z plane
     rotated_wall_groups, rotated_wall_axes = [], []
     wall_counter = 0
     for group, direction in zip(wall_groups, wall_directions):
         rotated_wall = rotate_points_to_xz_plane(group, direction)
-        wall_axis = [(wall_axes[wall_counter][0][0], wall_axes[wall_counter][0][1], z_floor + z_ceiling / 2),
-                     (wall_axes[wall_counter][1][0], wall_axes[wall_counter][1][1], z_floor + z_ceiling / 2)]
+        _axis_mid_z = (z_floor + z_ceiling) / 2
+        wall_axis = [(wall_axes[wall_counter][0][0], wall_axes[wall_counter][0][1], _axis_mid_z),
+                     (wall_axes[wall_counter][1][0], wall_axes[wall_counter][1][1], _axis_mid_z)]
         rotated_wall_axis = rotate_points_to_xz_plane(wall_axis, direction)
         rotated_wall_groups.append(rotated_wall)
         rotated_wall_axes.append(rotated_wall_axis)
@@ -1138,7 +1398,7 @@ def identify_walls(pointcloud, pointcloud_resolution, minimum_wall_length, minim
         # plot_wall(translated_wall, wall_thicknesses[idx], idx+1)
 
     # Inverse-rotate wall axis endpoints back to the original coordinate system
-    if _do_rotate:
+    if _do_rotate and wall_axes:
         sp_arr = _rotate_pts_2d(np.array(list(start_points)), _pca_angle)
         ep_arr = _rotate_pts_2d(np.array(list(end_points)),   _pca_angle)
         start_points = tuple(map(tuple, sp_arr))
@@ -1287,12 +1547,19 @@ def compute_wall_thickness(segment_group):
     return np.mean(distances)
 
 
-def assign_points_to_walls(x_coords, y_coords, z_coords, wall_axes, parallel_groups, z_floor, z_ceiling):
+def assign_points_to_walls(x_coords, y_coords, z_coords, wall_axes, parallel_groups, z_floor, z_ceiling,
+                           wall_thicknesses=None):
     # Stack coordinates into a single array
     points = np.vstack([x_coords, y_coords, z_coords]).T
 
-    # Compute wall thicknesses using a vectorized approach if possible
-    wall_thicknesses = np.array([compute_wall_thickness(group) for group in parallel_groups])
+    # Wall thicknesses. When the axes were produced by merge_wall_fragments the
+    # parallel_groups hold the concatenated segments of several fragments, so
+    # the two-longest-segment heuristic of compute_wall_thickness no longer
+    # reflects the wall thickness; the caller then passes the merged thicknesses.
+    if wall_thicknesses is None:
+        wall_thicknesses = np.array([compute_wall_thickness(group) for group in parallel_groups])
+    else:
+        wall_thicknesses = np.asarray(wall_thicknesses, dtype=float)
     acceptable_distances = 0.5 * wall_thicknesses + 0.2 * wall_thicknesses
 
     # Filter points by z-coordinates first to reduce computations
@@ -1377,7 +1644,8 @@ def export_wall_points_to_txt(wall_groups, output_dir="walls_outputs_txt"):
 def identify_openings(wall_number, wall_points, wall_label, resolution, grid_roughness,
                       histogram_threshold=0.7, thickness_for_extraction=0.07,
                       min_opening_width=0.3, min_opening_height=0.3, max_opening_aspect_ratio=4,
-                      door_z_max=0.1, door_min_height=1.8, opening_min_z_top=1.6, plot_histograms_for_openings=False):
+                      door_z_max=0.1, door_min_height=1.8, opening_min_z_top=1.6,
+                      merge_gap=0.15, plot_histograms_for_openings=False):
     """Detect rectangular openings (windows and doors) in the wall."""
 
     valid_opening_widths, valid_opening_heights, valid_opening_types = [], [], []
@@ -1431,17 +1699,39 @@ def identify_openings(wall_number, wall_points, wall_label, resolution, grid_rou
                 if abs(end - start) > min_opening_width and (start >= x_min and end <= x_max):
                     openings.append((start, end))
 
-        # For each valid opening, determine more precise height using z-histogram
-        for x_start, x_end in openings:
-            middle_x = (x_start + x_end) / 2
-            tolerance = min_opening_width
-            points_at_middle = [z for x, z in projected_points if (middle_x - tolerance) <= x <= (middle_x + tolerance)]
+            elif count >= x_threshold and in_opening:
+                in_opening = False
+                end = edges[i]
+                if abs(end - start) > min_opening_width and (start >= x_min and end <= x_max):
+                    openings.append((start, end))
+        # An opening that runs to the end of the histogram never closes above
+        # the threshold, so it would be dropped; close it at the wall end.
+        if in_opening and (x_max - start) > min_opening_width:
+            openings.append((start, x_max))
 
-            z_hist, z_edges = np.histogram(points_at_middle, bins=z_bins, range=(z_min, z_max))
-            try:
-                max2 = sorted(z_hist, reverse=True)[2]
-            except:
-                pass
+        # Merge openings that are only separated by a thin mullion/frame so a
+        # single window detected as two panes is reported as one opening.
+        merged_openings = []
+        for start, end in openings:
+            if merged_openings and (start - merged_openings[-1][1]) < merge_gap:
+                merged_openings[-1] = (merged_openings[-1][0], max(merged_openings[-1][1], end))
+            else:
+                merged_openings.append((start, end))
+        openings = [(s, e) for s, e in merged_openings if (e - s) > min_opening_width]
+
+        # For each valid opening, determine more precise height using a
+        # z-histogram built from the whole opening width. Using a narrow slice
+        # around the middle lets a single mullion/frame column dominate the
+        # profile and truncate the opening.
+        _dbg = os.environ.get("CLOUD2BIM_DEBUG_OPENINGS")
+        for x_start, x_end in openings:
+            points_in_opening = [z for x, z in projected_points if x_start <= x <= x_end]
+
+            z_hist, z_edges = np.histogram(points_in_opening, bins=z_bins, range=(z_min, z_max))
+            # Reference solid density from a high-order bin, guarded against
+            # short histograms (the old [2] index raised on <3 bins).
+            z_desc = np.sort(z_hist)[::-1]
+            max2 = z_desc[min(2, len(z_desc) - 1)] if len(z_desc) else 0
             z_threshold = max2 * 0.2
 
             candidates = []
@@ -1456,6 +1746,14 @@ def identify_openings(wall_number, wall_points, wall_label, resolution, grid_rou
                     refined_z_max = z_edges[i + 1]
                     candidates.append((refined_z_min, refined_z_max))
                     refined_z_min, refined_z_max = None, None  # Reset for next potential candidate
+            # An opening that reaches the top of the histogram never closes.
+            if in_opening and refined_z_min is not None:
+                candidates.append((refined_z_min, z_edges[-1]))
+
+            if _dbg:
+                print(f"[OPENINGS] wall {wall_number} x[{x_start:.2f},{x_end:.2f}] "
+                      f"z_thr={z_threshold:.1f} hist={list(map(int, z_hist))} "
+                      f"cands={[(round(a, 2), round(b, 2)) for a, b in candidates]}")
 
             if candidates:
                 refined_z_min, refined_z_max = max(candidates, key=lambda pair: pair[1] - pair[0])

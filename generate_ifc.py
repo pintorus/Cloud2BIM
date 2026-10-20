@@ -648,14 +648,14 @@ class IFCmodel:
         )
         return opening_standard_case
 
-    def opening_placement(self, wall_start_point, wall_placement):
+    def opening_placement(self, wall_start_point, wall_placement, base_z=0.0):
         axis = self.ifc_file.create_entity("IfcDirection", DirectionRatios=(0.0, 0.0, 1.0))  # Z-axis
         ref_direction = self.ifc_file.create_entity("IfcDirection", DirectionRatios=(1.0, 0.0, 0.0))  # X-axis
 
         axis_placement_window = self.ifc_file.create_entity(
             "IfcAxis2Placement3D",
             Location=self.ifc_file.create_entity("IfcCartesianPoint",
-                                                 Coordinates=(wall_start_point[0], wall_start_point[1], 0.0)),
+                                                 Coordinates=(wall_start_point[0], wall_start_point[1], float(base_z))),
             Axis = axis,
             RefDirection = ref_direction
         )

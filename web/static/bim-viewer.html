@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sv">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -27,27 +27,39 @@
     .dot { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
     #stats { position: absolute; bottom: 12px; left: 12px; font-size: 11px;
              color: #4f5580; }
+    #tabs { margin-left: auto; display: none; gap: 6px; }
+    #tabs button { background: #232738; color: #9aa0c0; border: 1px solid #2e3350;
+                   border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer;
+                   font-family: inherit; }
+    #tabs button.active { background: #4f8ef7; color: #fff; border-color: #4f8ef7; }
   </style>
 </head>
 <body>
 
 <header>
   <strong>Cloud2BIM</strong>
-  <span id="hdr">3D Viewer — extraherar geometri…</span>
+  <span id="hdr" data-i18n="viewer.extracting">3D Viewer — extracting geometry…</span>
+  <div id="tabs">
+    <button type="button" id="tab-model" data-i18n="viewer.tab.model">IFC model</button>
+    <button type="button" id="tab-points" data-i18n="viewer.tab.points">Point cloud</button>
+    <button type="button" id="tab-overlay" data-i18n="viewer.tab.overlay">Overlay</button>
+  </div>
 </header>
 
 <div id="wrap">
   <canvas id="c"></canvas>
-  <div id="overlay"><div class="spinner"></div><div id="status">Laddar…</div></div>
+  <div id="overlay"><div class="spinner"></div><div id="status" data-i18n="viewer.loading">Loading…</div></div>
   <div id="legend" style="display:none">
-    <div class="leg"><div class="dot" style="background:#7fa8cc"></div>Vägg</div>
-    <div class="leg"><div class="dot" style="background:#8c8c9e"></div>Bjälklag</div>
-    <div class="leg"><div class="dot" style="background:#8dd3ff"></div>Fönster</div>
-    <div class="leg"><div class="dot" style="background:#c79e80"></div>Dörr</div>
-    <div class="leg"><div class="dot" style="background:#a6a6a6"></div>Övrigt</div>
+    <div class="leg"><div class="dot" style="background:#7fa8cc"></div><span data-i18n="viewer.legend.wall">Wall</span></div>
+    <div class="leg"><div class="dot" style="background:#8c8c9e"></div><span data-i18n="viewer.legend.slab">Slab</span></div>
+    <div class="leg"><div class="dot" style="background:#8dd3ff"></div><span data-i18n="viewer.legend.window">Window</span></div>
+    <div class="leg"><div class="dot" style="background:#c79e80"></div><span data-i18n="viewer.legend.door">Door</span></div>
+    <div class="leg"><div class="dot" style="background:#a6a6a6"></div><span data-i18n="viewer.legend.other">Other</span></div>
   </div>
   <div id="stats"></div>
 </div>
+
+<script src="/static/js/i18n.js"></script>
 
 <script type="importmap">
 {
@@ -64,9 +76,12 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 const params  = new URLSearchParams(location.search);
 const jobId   = params.get('job');
+const uploadId = params.get('upload');
+const netPath  = params.get('path');
 const overlay = document.getElementById('overlay');
 const status  = document.getElementById('status');
 const wrap    = document.getElementById('wrap');
+const t       = window.t; // i18n (classic script loaded above)
 
 function setStatus(msg) { status.textContent = msg; }
 function showError(msg) {
@@ -74,7 +89,15 @@ function showError(msg) {
     <div style="font-size:22px;margin-bottom:8px">⚠️</div><div>${msg}</div></div>`;
 }
 
-if (!jobId) { showError('Inget jobb-ID (?job=…)'); throw new Error(); }
+const pointcloudQuery = jobId
+  ? `job_id=${encodeURIComponent(jobId)}`
+  : uploadId
+    ? `upload_id=${encodeURIComponent(uploadId)}`
+    : netPath
+      ? `path=${encodeURIComponent(netPath)}`
+      : null;
+
+if (!jobId && !pointcloudQuery) { showError(t('viewer.no.job')); throw new Error(); }
 
 // ── Three.js setup ─────────────────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true });
@@ -115,60 +138,31 @@ scene.add(new THREE.HemisphereLight(0x4466aa, 0x224422, 0.3));
 const grid = new THREE.GridHelper(200, 40, 0x2e3350, 0x1f2236);
 scene.add(grid);
 
-// ── Load geometry from backend ─────────────────────────────────────────────
-setStatus('Extraherar IFC-geometri på servern… (kan ta 10-30 s)');
-
-let data;
-try {
-  const res = await fetch(`/api/jobs/${jobId}/geometry`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-  data = await res.json();
-} catch(e) {
-  showError('Kunde inte ladda geometri: ' + e.message);
-  throw e;
-}
-
-setStatus('Bygger 3D-scen…');
-
-// IFC uses Z-up; Three.js uses Y-up — rotate root group -90° around X
+// ── Model + point cloud groups ─────────────────────────────────────────────
+// IFC / point clouds use Z-up; Three.js uses Y-up — rotate groups -90° around X
 const root = new THREE.Group();
 root.rotation.x = -Math.PI / 2;
+root.visible = false;
 scene.add(root);
 
-let totalFaces = 0;
+const pointsGroup = new THREE.Group();
+pointsGroup.rotation.x = -Math.PI / 2;
+scene.add(pointsGroup);
 
-data.objects.forEach(obj => {
-  if (!obj.v.length || !obj.f.length) return;
+const legend  = document.getElementById('legend');
+const tabs    = document.getElementById('tabs');
+const statsEl = document.getElementById('stats');
 
-  const geom = new THREE.BufferGeometry();
-  geom.setAttribute('position', new THREE.Float32BufferAttribute(obj.v, 3));
-  geom.setIndex(obj.f);
-  geom.computeVertexNormals();
+let hasModel = false, hasPoints = false;
+let modelStats = '', pointStats = '';
+const modelMats = [];
 
-  const [r, g, b] = obj.c;
-  const isWindow = obj.t === 'IfcWindow';
-  const mat = new THREE.MeshPhongMaterial({
-    color: new THREE.Color(r, g, b),
-    side: THREE.DoubleSide,
-    shininess: isWindow ? 120 : 25,
-    transparent: isWindow,
-    opacity: isWindow ? 0.55 : 1.0,
-    specular: isWindow ? new THREE.Color(0.6, 0.6, 0.6) : new THREE.Color(0.05, 0.05, 0.05),
-  });
-
-  const mesh = new THREE.Mesh(geom, mat);
-  mesh.castShadow = !isWindow;
-  mesh.receiveShadow = true;
-  root.add(mesh);
-  totalFaces += obj.f.length / 3;
-});
-
-// Fit camera to model (compute bbox in world space after rotation)
-const bbox = new THREE.Box3().setFromObject(root);
-if (!bbox.isEmpty()) {
+function fitCamera(obj) {
+  const bbox = new THREE.Box3().setFromObject(obj);
+  if (bbox.isEmpty()) return;
   const center = bbox.getCenter(new THREE.Vector3());
   const size   = bbox.getSize(new THREE.Vector3());
-  const maxDim = Math.max(size.x, size.y, size.z);
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
   const dist   = maxDim * 1.8;
 
   camera.position.set(center.x + dist * 0.6, center.y + dist * 0.5, center.z + dist);
@@ -177,15 +171,166 @@ if (!bbox.isEmpty()) {
   camera.updateProjectionMatrix();
   controls.target.copy(center);
   controls.update();
-
-  grid.position.y = bbox.min.y;
+  grid.position.set(center.x, bbox.min.y, center.z);
 }
 
-// Stats
-document.getElementById('stats').textContent =
-  `${data.objects.length} objekt · ${totalFaces.toLocaleString()} trianglar`;
-document.getElementById('legend').style.display = 'flex';
-document.getElementById('hdr').textContent = '3D Viewer — ' + data.objects.length + ' objekt';
+async function loadModel() {
+  setStatus(t('viewer.geom.extract'));
+  const res = await fetch(`/api/jobs/${jobId}/geometry`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+
+  let totalFaces = 0;
+  data.objects.forEach(obj => {
+    if (!obj.v.length || !obj.f.length) return;
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(obj.v, 3));
+    geom.setIndex(obj.f);
+    geom.computeVertexNormals();
+
+    const [r, g, b] = obj.c;
+    const isWindow = obj.t === 'IfcWindow';
+    const mat = new THREE.MeshPhongMaterial({
+      color: new THREE.Color(r, g, b),
+      side: THREE.DoubleSide,
+      shininess: isWindow ? 120 : 25,
+      transparent: isWindow,
+      opacity: isWindow ? 0.55 : 1.0,
+      specular: isWindow ? new THREE.Color(0.6, 0.6, 0.6) : new THREE.Color(0.05, 0.05, 0.05),
+    });
+    mat.userData.window = isWindow;
+    modelMats.push(mat);
+
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.castShadow = !isWindow;
+    mesh.receiveShadow = true;
+    root.add(mesh);
+    totalFaces += obj.f.length / 3;
+  });
+
+  hasModel = true;
+  modelStats = t('viewer.stats', { n: data.objects.length, t: totalFaces.toLocaleString(locale()) });
+}
+
+function heightColor(v) {
+  v = Math.max(0, Math.min(1, v));
+  const stops = [
+    [0.12, 0.28, 0.60], [0.18, 0.62, 0.78], [0.30, 0.75, 0.35],
+    [0.92, 0.80, 0.25], [0.88, 0.30, 0.22],
+  ];
+  const p = v * (stops.length - 1);
+  const i = Math.floor(p), f = p - i;
+  const a = stops[i], b = stops[Math.min(i + 1, stops.length - 1)];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+
+async function loadPoints() {
+  setStatus(t('viewer.pc.loading'));
+  const res = await fetch(`/api/pointcloud?${pointcloudQuery}&max_points=3000000`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  const buf = await res.arrayBuffer();
+  const dv = new DataView(buf);
+
+  const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+  if (magic !== 'C2BP') throw new Error('Unexpected point cloud format');
+
+  const n = dv.getUint32(8, true);
+  const hasColor = dv.getUint32(12, true) === 1;
+  let off = 16;
+  const bmin = [dv.getFloat32(off, true), dv.getFloat32(off + 4, true), dv.getFloat32(off + 8, true)];
+  off += 12;
+  const bmax = [dv.getFloat32(off, true), dv.getFloat32(off + 4, true), dv.getFloat32(off + 8, true)];
+  off += 12;
+
+  const pos = new Float32Array(buf, off, n * 3);
+  off += n * 3 * 4;
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+
+  const colors = new Float32Array(n * 3);
+  let useColor = hasColor;
+  let src = null;
+  if (hasColor) {
+    src = new Uint8Array(buf, off, n * 3);
+    let sum = 0;
+    for (let i = 0; i < n * 3; i++) sum += src[i];
+    // Mean channel value ~0 means the colour channel carries no information
+    // (colourless scan): fall back to the height gradient instead of black.
+    if (sum / (n * 3) < 1.5) useColor = false;
+  }
+  if (useColor) {
+    for (let i = 0; i < n * 3; i++) colors[i] = src[i] / 255;
+  } else {
+    const dz = (bmax[2] - bmin[2]) || 1;
+    for (let i = 0; i < n; i++) {
+      const c = heightColor(pos[i * 3 + 2] / dz);
+      colors[i * 3] = c[0]; colors[i * 3 + 1] = c[1]; colors[i * 3 + 2] = c[2];
+    }
+  }
+  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  const extent = Math.max(bmax[0] - bmin[0], bmax[1] - bmin[1], bmax[2] - bmin[2]) || 1;
+  const mat = new THREE.PointsMaterial({
+    size: extent / 400, vertexColors: true, sizeAttenuation: true,
+  });
+  pointsGroup.add(new THREE.Points(geom, mat));
+
+  pointsGroup.position.set(bmin[0], bmin[1], bmin[2]);
+  hasPoints = true;
+  pointStats = t('viewer.pc.stats', { n: n.toLocaleString(locale()) });
+}
+
+function showView(which) {
+  if (which === 'overlay' && !(hasModel && hasPoints)) which = hasModel ? 'model' : 'points';
+  root.visible = hasModel && (which === 'model' || which === 'overlay');
+  pointsGroup.visible = hasPoints && (which === 'points' || which === 'overlay');
+  document.getElementById('tab-model').classList.toggle('active', which === 'model');
+  document.getElementById('tab-points').classList.toggle('active', which === 'points');
+  document.getElementById('tab-overlay').classList.toggle('active', which === 'overlay');
+  // In overlay mode, make the model translucent so the point cloud shows through.
+  const overlayMode = (which === 'overlay');
+  modelMats.forEach(m => {
+    const win = m.userData.window;
+    m.transparent = overlayMode || win;
+    m.opacity = overlayMode ? (win ? 0.35 : 0.28) : (win ? 0.55 : 1.0);
+    m.depthWrite = !overlayMode;
+    m.needsUpdate = true;
+  });
+  legend.style.display = root.visible ? 'flex' : 'none';
+  statsEl.textContent = which === 'model' ? modelStats
+    : which === 'points' ? pointStats
+    : [modelStats, pointStats].filter(Boolean).join(' · ');
+  document.getElementById('hdr').textContent =
+    which === 'model' ? t('viewer.header', { n: root.children.length })
+    : which === 'points' ? t('viewer.pc.header')
+    : t('viewer.overlay.header', { n: root.children.length });
+  fitCamera(root.visible ? root : pointsGroup);
+}
+
+document.getElementById('tab-model').addEventListener('click', () => { if (hasModel) showView('model'); });
+document.getElementById('tab-points').addEventListener('click', () => { if (hasPoints) showView('points'); });
+document.getElementById('tab-overlay').addEventListener('click', () => { if (hasModel && hasPoints) showView('overlay'); });
+
+setStatus(t('viewer.loading'));
+const results = await Promise.allSettled([
+  ...(jobId ? [loadModel()] : []),
+  ...(pointcloudQuery ? [loadPoints()] : []),
+]);
+
+if (!hasModel && !hasPoints) {
+  const firstErr = results.find(r => r.status === 'rejected');
+  showError((t('viewer.geom.error') || '') + (firstErr ? firstErr.reason.message : ''));
+  throw new Error('load failed');
+}
+
+// Show tabs only when both views are available
+tabs.style.display = (hasModel && hasPoints) ? 'flex' : 'none';
+const wantView = params.get('view');
+showView((wantView === 'overlay' && hasModel && hasPoints) ? 'overlay'
+  : (wantView === 'points' && hasPoints) ? 'points'
+  : (hasModel ? 'model' : 'points'));
 
 // Hide overlay
 overlay.style.display = 'none';
