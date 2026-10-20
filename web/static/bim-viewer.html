@@ -28,11 +28,19 @@
     .dot { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
     #stats { position: absolute; bottom: 12px; left: 12px; font-size: 11px;
              color: #4f5580; }
-    #tabs { margin-left: auto; display: none; gap: 6px; }
+    #tabs { display: none; gap: 6px; }
     #tabs button { background: #232738; color: #9aa0c0; border: 1px solid #2e3350;
                    border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer;
                    font-family: inherit; }
     #tabs button.active { background: #4f8ef7; color: #fff; border-color: #4f8ef7; }
+    #header-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    .btn-download-ifc {
+      background: #238636; color: #fff; border: 1px solid #2ea043;
+      border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer;
+      font-family: inherit; font-weight: 500; text-decoration: none;
+      display: inline-flex; align-items: center; gap: 4px; transition: background .15s;
+    }
+    .btn-download-ifc:hover { background: #2ea043; color: #fff; }
   </style>
 </head>
 <body>
@@ -40,10 +48,15 @@
 <header>
   <strong>Cloud2BIM</strong>
   <span id="hdr" data-i18n="viewer.extracting">3D Viewer — extracting geometry…</span>
-  <div id="tabs">
-    <button type="button" id="tab-model" data-i18n="viewer.tab.model">IFC model</button>
-    <button type="button" id="tab-points" data-i18n="viewer.tab.points">Point cloud</button>
-    <button type="button" id="tab-overlay" data-i18n="viewer.tab.overlay">Overlay</button>
+  <div id="header-actions">
+    <div id="tabs">
+      <button type="button" id="tab-model" data-i18n="viewer.tab.model">IFC model</button>
+      <button type="button" id="tab-points" data-i18n="viewer.tab.points">Point cloud</button>
+      <button type="button" id="tab-overlay" data-i18n="viewer.tab.overlay">Overlay</button>
+    </div>
+    <a id="btn-download-ifc" class="btn-download-ifc" style="display:none" download>
+      <span data-i18n="viewer.download.ifc">⬇ Download IFC</span>
+    </a>
   </div>
 </header>
 
@@ -328,6 +341,14 @@ if (!hasModel && !hasPoints) {
 
 // Show tabs only when both views are available
 tabs.style.display = (hasModel && hasPoints) ? 'flex' : 'none';
+
+// Enable download IFC button if an IFC model is loaded for this job
+const dlBtn = document.getElementById('btn-download-ifc');
+if (jobId && hasModel && dlBtn) {
+  dlBtn.href = `/api/jobs/${encodeURIComponent(jobId)}/download`;
+  dlBtn.style.display = 'inline-flex';
+}
+
 const wantView = params.get('view');
 showView((wantView === 'overlay' && hasModel && hasPoints) ? 'overlay'
   : (wantView === 'points' && hasPoints) ? 'points'

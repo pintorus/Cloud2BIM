@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import subprocess
@@ -41,7 +42,32 @@ class JobManager:
     def get_job(self, job_id: str) -> Optional[dict]:
         with self._lock:
             job = self._jobs.get(job_id)
-            return dict(job) if job else None
+            if job:
+                return dict(job)
+
+        # Fallback: check if the job exists on disk
+        job_dir = self.jobs_dir / job_id
+        if job_dir.is_dir():
+            ifc_file = job_dir / "output.ifc"
+            info_file = job_dir / "job_info.json"
+            info = {}
+            if info_file.exists():
+                try:
+                    info = json.loads(info_file.read_text())
+                except Exception:
+                    pass
+            if ifc_file.exists():
+                created = info.get("created_at") or datetime.fromtimestamp(ifc_file.stat().st_mtime).isoformat()
+                return {
+                    "job_id": job_id,
+                    "status": "completed",
+                    "progress": {"stage": "done", "pct": 100},
+                    "input_path": info.get("original_filename", ""),
+                    "log_lines": [],
+                    "created_at": created,
+                    "finished_at": created,
+                }
+        return None
 
     def list_jobs(self) -> list:
         with self._lock:

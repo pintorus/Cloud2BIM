@@ -235,6 +235,7 @@ class CreateJobRequest(BaseModel):
     ifc_site_longitude: List[int] = Field(default_factory=lambda: [0, 0, 0])
     ifc_site_elevation: float = 0.0
     material_for_objects: str = "Concrete"
+    ifc_filename: Optional[str] = None
 
 
 def _convert_las_to_xyz(las_path: str, xyz_path: str, log_fn=None):
@@ -364,10 +365,16 @@ async def create_job(request: CreateJobRequest):
 
     # ── Persist job metadata for later re-use ────────────────────────────
     from datetime import datetime as _dt
-    (job_dir / "job_info.json").write_text(json.dumps({
+    job_info = {
         "created_at": _dt.now().isoformat(),
         "original_filename": original_filename,
-    }))
+    }
+    if request.ifc_filename and request.ifc_filename.strip():
+        custom_name = request.ifc_filename.strip()
+        if not custom_name.lower().endswith(".ifc"):
+            custom_name += ".ifc"
+        job_info["ifc_filename"] = custom_name
+    (job_dir / "job_info.json").write_text(json.dumps(job_info))
 
     config = {
         "e57_input": e57_input,
@@ -442,6 +449,21 @@ async def get_job(job_id: str):
     job = job_manager.get_job(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
+    ifc_path = JOBS_DIR / job_id / "output.ifc"
+    if ifc_path.exists():
+        job["ifc_size_bytes"] = ifc_path.stat().st_size
+        info_path = JOBS_DIR / job_id / "job_info.json"
+        if info_path.exists():
+            try:
+                info = json.loads(info_path.read_text())
+                if info.get("ifc_filename"):
+                    job["ifc_filename"] = info["ifc_filename"]
+                elif info.get("original_filename"):
+                    job["ifc_filename"] = f"{Path(info['original_filename']).stem}.ifc"
+            except Exception:
+                pass
+        if not job.get("ifc_filename"):
+            job["ifc_filename"] = f"cloud2bim_{job_id[:8]}.ifc"
     return job
 
 
@@ -705,17 +727,34 @@ async def suggest_pointcloud_clean(
         raise HTTPException(500, f"Could not analyse point cloud: {exc}")
 
     return {"params": params, "diagnostics": diagnostics}
+
+
+@app.get("/api/jobs/{job_id}/download")
 async def download_ifc(job_id: str):
     job = job_manager.get_job(job_id)
-    if not job:
-        raise HTTPException(404, "Job not found")
-    if job["status"] != "completed":
-        raise HTTPException(409, "Job not completed")
     ifc_path = JOBS_DIR / job_id / "output.ifc"
     if not ifc_path.exists():
-        raise HTTPException(404, "Output file not found")
+        if not job:
+            raise HTTPException(404, "Job not found")
+        if job["status"] != "completed":
+            raise HTTPException(409, "Job not completed")
+        raise HTTPException(404, "Output IFC file not found")
+
+    filename = f"cloud2bim_{job_id[:8]}.ifc"
+    info_path = JOBS_DIR / job_id / "job_info.json"
+    if info_path.exists():
+        try:
+            info = json.loads(info_path.read_text())
+            if info.get("ifc_filename"):
+                filename = info["ifc_filename"]
+            elif info.get("original_filename"):
+                base = Path(info["original_filename"]).stem
+                filename = f"{base}.ifc"
+        except Exception:
+            pass
+
     return FileResponse(
         str(ifc_path),
         media_type="application/octet-stream",
-        filename=f"cloud2bim_{job_id[:8]}.ifc",
+        filename=filename,
     )

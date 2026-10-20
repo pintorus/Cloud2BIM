@@ -10,6 +10,7 @@ const state = {
   progressStage: 'pending',
 };
 window._state = state; // expose for console debugging
+let _lastJobInfo = null;
 
 const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
 
@@ -172,6 +173,9 @@ function resetJob() {
   const previewBtn = document.getElementById('btn-preview-1');
   if (previewBtn) previewBtn.style.display = 'none';
   document.getElementById('result-stats').innerHTML = '';
+  const ifcInfo = document.getElementById('ifc-file-info');
+  if (ifcInfo) ifcInfo.style.display = 'none';
+  _lastJobInfo = null;
 
   // Reset the cleaning preview
   _cleanPreviewDone = false;
@@ -684,8 +688,25 @@ async function setupResults() {
   if (viewBtn) viewBtn.style.display = 'inline-flex';
   const pcBtn = document.getElementById('btn-open-pc');
   if (pcBtn) pcBtn.style.display = 'inline-flex';
-  const job = await fetch('/api/jobs/' + state.jobId).then(r => r.json());
-  renderStats(parseStats(job.log_lines || []));
+
+  try {
+    const job = await fetch('/api/jobs/' + state.jobId).then(r => r.json());
+    if (job.ifc_filename) {
+      dlBtn.setAttribute('download', job.ifc_filename);
+    }
+    const infoEl = document.getElementById('ifc-file-info');
+    if (infoEl) {
+      const name = job.ifc_filename || ('cloud2bim_' + state.jobId.slice(0, 8) + '.ifc');
+      const sizeStr = job.ifc_size_bytes ? fmt_bytes(job.ifc_size_bytes) : '';
+      _lastJobInfo = { name, size: sizeStr };
+      infoEl.textContent = t('s4.ifc.info', _lastJobInfo) || `File: ${name} · ${sizeStr} · Format: IFC4`;
+      infoEl.style.display = 'block';
+    }
+    renderStats(parseStats(job.log_lines || []));
+  } catch (e) {
+    console.error('Error fetching job details', e);
+  }
+
   if (typeof window.loadViewer === 'function') window.loadViewer(state.jobId);
 }
 
@@ -744,6 +765,7 @@ function collectConfig() {
     ifc_building_phase: v('ifc-building-phase'),
     ifc_site_latitude: [0, 0, 0], ifc_site_longitude: [0, 0, 0],
     ifc_site_elevation: n('ifc-elevation'), material_for_objects: v('material'),
+    ifc_filename: v('ifc-output-filename') || null,
   };
 }
 
@@ -808,5 +830,11 @@ document.addEventListener('langchange', () => {
   const previewLoading = document.getElementById('preview-loading');
   if (previewLoading && previewLoading.style.display !== 'none') {
     previewLoading.textContent = t('s4.preview.loading');
+  }
+
+  // IFC file info (step 4)
+  const ifcInfoEl = document.getElementById('ifc-file-info');
+  if (ifcInfoEl && _lastJobInfo && ifcInfoEl.style.display !== 'none') {
+    ifcInfoEl.textContent = t('s4.ifc.info', _lastJobInfo) || `File: ${_lastJobInfo.name} · ${_lastJobInfo.size} · Format: IFC4`;
   }
 });

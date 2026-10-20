@@ -7,6 +7,7 @@ import ifcopenshell.util.placement
 import datetime
 import uuid
 import math
+import os
 
 class IFCmodel:
     def __init__(self, project_name, output_file):
@@ -1524,4 +1525,7 @@ class IFCmodel:
         return stair
 
     def write(self):
+        out_dir = os.path.dirname(self.output_file)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
         self.ifc_file.write(self.output_file)

@@ -80,6 +80,8 @@
       's2.project.name': 'Project name',
       's2.project.long.name': 'Long project name',
       's2.project.version': 'Version',
+      's2.project.filename': 'IFC output filename',
+      's2.project.filename.ph': 'auto (e.g. model.ifc)',
       's2.author': 'Author',
       's2.author.first': 'First name',
       's2.author.last': 'Last name',
@@ -157,6 +159,7 @@
       's4.title': 'Results',
       's4.ready': '✓ The IFC model has been generated and is ready to download.',
       's4.download': '⬇\u00a0 Download IFC file',
+      's4.ifc.info': 'File: {name} · {size} · Format: IFC4',
       's4.viewer': '🏗\u00a0 Open 3D viewer',
       's4.pointcloud': '⚈\u00a0 View point cloud',
       's4.floorplan': 'Floor plan',
@@ -191,6 +194,7 @@
       'viewer.tab.points': 'Point cloud',
       'viewer.tab.overlay': 'Overlay',
       'viewer.overlay.header': 'IFC + point cloud overlay — {n} objects',
+      'viewer.download.ifc': '⬇\u00a0 Download IFC',
 
       // ── Locale helpers ───────────────────────────────────────────────
       'locale': 'en-GB',
@@ -269,6 +273,8 @@
       's2.project.name': 'Nom du projet',
       's2.project.long.name': 'Nom long du projet',
       's2.project.version': 'Version',
+      's2.project.filename': 'Nom du fichier IFC généré',
+      's2.project.filename.ph': 'auto (ex. modele.ifc)',
       's2.author': 'Auteur',
       's2.author.first': 'Prénom',
       's2.author.last': 'Nom',
@@ -346,6 +352,7 @@
       's4.title': 'Résultats',
       's4.ready': '✓ Le modèle IFC a été généré et est prêt à être téléchargé.',
       's4.download': '⬇\u00a0 Télécharger le fichier IFC',
+      's4.ifc.info': 'Fichier : {name} · {size} · Format : IFC4',
       's4.viewer': '🏗\u00a0 Ouvrir la visionneuse 3D',
       's4.pointcloud': '⚈\u00a0 Voir le nuage de points',
       's4.floorplan': 'Plan d’étage',
@@ -380,6 +387,7 @@
       'viewer.tab.points': 'Nuage de points',
       'viewer.tab.overlay': 'Superposition',
       'viewer.overlay.header': 'Superposition IFC + nuage — {n} objets',
+      'viewer.download.ifc': '⬇\u00a0 Télécharger IFC',
 
       // ── Locale helpers ───────────────────────────────────────────────
       'locale': 'fr-FR',
